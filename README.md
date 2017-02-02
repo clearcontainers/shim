@@ -1,3 +1,4 @@
++[![Build Status](https://travis-ci.org/clearcontainers/shim.svg?branch=master)](https://travis-ci.org/clearcontainers/shim)
 # `cc-shim`
 
 `cc-shim` is a process spawned by the runtime per container workload. The runtime 
