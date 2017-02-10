@@ -27,6 +27,9 @@ struct cc_shim {
 	uint64_t    io_seq_no;
 	uint64_t    err_seq_no;
 	bool        exiting;
+	char       *token;
+	char       *proxy_address;
+	int         proxy_port;
 };
 
 /*

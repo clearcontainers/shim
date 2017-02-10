@@ -533,13 +533,11 @@ parse_numeric_option(char *input) {
  */
 void
 print_usage(void) {
-	printf("%s: Usage\n", program_name);
+        printf("%s: Usage\n", program_name);
         printf("  -c,  --container-id   Container id\n");
-        printf("  -p,  --proxy-sock-fd  File descriptor of the socket connected to cc-proxy\n");
-        printf("  -o,  --proxy-io-fd    File descriptor of I/0 fd sent by the cc-proxy\n");
-        printf("  -s,  --seq-no         Sequence no for stdin and stdout\n");
-        printf("  -e,  --err-seq-no     Sequence no for stderr\n");
         printf("  -d,  --debug          Enable debug output\n");
+        printf("  -t,  --token          Connection token passed by cc-proxy\n");
+        printf("  -u,  --uri            Connection uri. Supported schemes are tcp: and unix:\n");
         printf("  -h,  --help           Display this help message\n");
 }
 
@@ -553,59 +551,44 @@ main(int argc, char **argv)
 		.io_seq_no      =  0,
 		.err_seq_no     =  0,
 		.exiting        =  false,
+		.token          =  NULL,
+		.proxy_address  =  NULL,
+		.proxy_port     =  -1,
 	};
 	int                ret;
 	struct sigaction   sa;
 	int                c;
 	bool               debug = false;
 	long long          val;
+	char              *uri = NULL;
 
 	program_name = argv[0];
 
 	struct option prog_opts[] = {
 		{"container-id", required_argument, 0, 'c'},
-		{"proxy-sock-fd", required_argument, 0, 'p'},
-		{"proxy-io-fd", required_argument, 0, 'o'},
-		{"seq-no", required_argument, 0, 's'},
-		{"err-seq-no", required_argument, 0, 'e'},
 		{"debug", no_argument, 0, 'd'},
 		{"help", no_argument, 0, 'h'},
+		{"token", required_argument, 0, 't'},
+		{"uri", required_argument, 0, 'u'},
 		{ 0, 0, 0, 0},
 	};
 
-	while ((c = getopt_long(argc, argv, "c:p:o:s:e:dh", prog_opts, NULL))!= -1) {
+	while ((c = getopt_long(argc, argv, "c:dht:u:", prog_opts, NULL))!= -1) {
 		switch (c) {
 			case 'c':
 				shim.container_id = strdup(optarg);
 				break;
-			case 'p':
-				shim.proxy_sock_fd = (int)parse_numeric_option(optarg);
-				if (shim.proxy_sock_fd < 0) {
-					err_exit("Invalid value for proxy socket fd\n");
-				}
-				break;
-			case 'o':
-				shim.proxy_io_fd = (int)parse_numeric_option(optarg);
-				if (shim.proxy_io_fd < 0) {
-					err_exit("Invalid value for proxy IO fd\n");
-				}
-				break;
-			case 's':
-				val = parse_numeric_option(optarg);
-				if (val == -1) {
-					err_exit("Invalid value for I/O seqence no\n");
-				}
-				shim.io_seq_no = (uint64_t)val;
-				break;
-			case 'e':
-				val = parse_numeric_option(optarg);
-				if (val == -1) {
-					err_exit("Invalid value for error sequence no\n");
-				}
-				shim.err_seq_no = (uint64_t)val;
+			case 't':
+				shim.token = strdup(optarg);
 				break;
 			case 'd':
 				debug = true;
+				break;
+			case 'u':
+				uri = strdup(optarg);
+				if ( !uri) {
+					abort();
+				}
 				break;
 			case 'h':
 				print_usage();
@@ -620,16 +603,12 @@ main(int argc, char **argv)
 		err_exit("Missing container id\n");
 	}
 
-	if ( shim.proxy_sock_fd == -1) {
-		err_exit("Missing proxy socket file descriptor\n");
+	if ( !shim.token) {
+		err_exit("Missing connection token\n");
 	}
 
-	if ( shim.proxy_io_fd == -1) {
-		err_exit("Missing proxy I/O file descriptor\n");
-	}
-
-	if (shim.io_seq_no == 0) {
-		err_exit("Missing I/O sequence number\n");
+	if (! uri) {
+		err_exit("Missing connection uri\n");
 	}
 
 	shim_log_init(debug);
