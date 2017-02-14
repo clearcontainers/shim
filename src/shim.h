@@ -17,7 +17,7 @@
 /* The shim would be handling fixed number of predefined fds.
  * This would be signal fd, stdin fd and a proxy socket connection fd.
  */
-#define MAX_POLL_FDS 4
+#define MAX_POLL_FDS 3
 
 struct cc_shim {
 	char       *container_id;

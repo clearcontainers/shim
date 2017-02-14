@@ -48,9 +48,8 @@ struct pollfd poll_fds[MAX_POLL_FDS] = {{-1}};
 
 // File descriptors are added at specific index in the poll_fds array
 #define SIGNAL_FD_INDEX 0
-#define PROXY_IO_INDEX 1
-#define PROXY_CTL_INDEX 2
-#define STDIN_INDEX 3
+#define PROXY_SOCK_INDEX 1
+#define STDIN_INDEX 2
 
 /* Pipe used for capturing signal occurence */
 int signal_pipe_fd[2] = { -1, -1 };
@@ -905,9 +904,7 @@ main(int argc, char **argv)
 		err_exit("sigaction");
 	}
 
-	add_pollfd(poll_fds, PROXY_IO_INDEX, shim.proxy_io_fd, POLLIN | POLLPRI);
-
-	add_pollfd(poll_fds, PROXY_CTL_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
+	add_pollfd(poll_fds, PROXY_SOCK_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
 
 	/* Add stdin only if it is attached to a terminal.
 	 * If we add stdin in the non-interactive case, since stdin is closed by docker
@@ -953,13 +950,8 @@ main(int argc, char **argv)
 			handle_signals(&shim);
 		}
 
-		//check proxy_io_fd
-		if (poll_fds[PROXY_IO_INDEX].revents != 0) {
-			handle_proxy_output(&shim);
-		}
-
 		// check for proxy sockfd
-		if (poll_fds[PROXY_CTL_INDEX].revents != 0) {
+		if (poll_fds[PROXY_SOCK_INDEX].revents != 0) {
 			handle_proxy_ctl(&shim);
 		}
 
