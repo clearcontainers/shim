@@ -97,6 +97,38 @@ set_fd_nonblocking(int fd)
 }
 
 /*!
+ * Store short integer as big endian in buffer
+ *
+ * \param buf Buffer to store the value in
+ * \param val Short Integer to be converted to big endian
+ */
+void
+set_big_endian_16(uint8_t *buf, uint16_t val)
+{
+	if (! buf) {
+		return;
+	}
+	buf[0] = (uint8_t)(val >> 8);
+	buf[1] = (uint8_t)val;
+}
+
+/*!
+ * Convert the value stored in buffer to little endian
+ *
+ * \param buf Buffer storing the big endian value
+ *
+ * \return Unsigned 16 bit network ordered integer
+ */
+uint16_t
+get_big_endian_16(const uint8_t *buf)
+{
+	if (! buf) {
+		return 0;
+	}
+	return (uint16_t)(buf[0] << 8 | buf[1] );
+}
+
+/*!
  * Store integer as big endian in buffer
  *
  * \param buf Buffer to store the value in
