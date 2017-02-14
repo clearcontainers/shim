@@ -32,6 +32,11 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <termios.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <netdb.h>
 
 #include "utils.h"
 #include "log.h"
@@ -528,6 +533,191 @@ parse_numeric_option(char *input) {
 	return num;
 }
 
+/*
+ * Parse proxy connection uri for connection address
+ * and port for tcp.
+ * Expected schemes are unix: and tcp:
+ *
+ * \param shim \ref cc_shim
+ * \param uri String containing the uri
+ *
+ * \return true on success, false on failure
+ */
+bool
+parse_connection_uri(struct cc_shim *shim, char *uri)
+{
+	const char *unix_uri = "unix://";
+	const char *tcp_uri = "tcp://";
+	size_t      unix_uri_len = strlen(unix_uri);
+	size_t      tcp_uri_len = strlen(tcp_uri);
+	bool        ret = false;
+	ssize_t     addr_len;
+
+	if (! (shim && uri)) {
+		return false;
+	}
+
+	if (! strncmp(uri, unix_uri, unix_uri_len)) {
+		shim->proxy_address = strdup(uri + unix_uri_len);
+
+		if ( !shim->proxy_address) {
+			abort();
+		}
+		ret = true;
+	} else if (! strncmp(uri, tcp_uri, tcp_uri_len)) {
+		char *port_offset = strstr(uri + tcp_uri_len, ":");
+
+		if ( !port_offset) {
+			shim_error("Missing port in uri %s\n", uri);
+			goto out;
+		}
+
+		shim->proxy_port = (int)parse_numeric_option(port_offset + 1);
+		if (shim->proxy_port == -1) {
+			shim_error("Could not parse port in uri %s: %s\n",
+					uri, strerror(errno));
+			goto out;
+		}
+
+		addr_len = port_offset - (uri + tcp_uri_len);
+
+		if (addr_len == 0) {
+			shim_error("Missing tcp hostname in uri %s\n", uri);
+			goto out;
+		}
+
+		shim->proxy_address = calloc(sizeof(char),
+						(size_t)addr_len + 1);
+
+		if ( !shim->proxy_address) {
+			abort();
+		}
+
+		memcpy(shim->proxy_address, uri + tcp_uri_len,
+				(size_t)addr_len * sizeof(char));
+		ret = true;
+	} else {
+		shim_error("Invalid uri scheme : %s\n", uri);
+	}
+out:
+	free(uri);
+	return ret;
+}
+
+/*
+ * Establish tcp/unix connection with proxy.
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false on failure
+ */
+bool
+connect_to_proxy(struct cc_shim *shim)
+{
+	int   sockfd = -1;
+        char *port_str = NULL;
+	int   ret;
+
+	if (! shim) {
+		return false;
+	}
+
+	/* Uninitialised port means the uri provided is a
+	 * unix socket connection path
+	 */
+	if (shim->proxy_port == -1) {
+		struct sockaddr_un remote;
+		size_t path_size = sizeof(remote.sun_path);
+
+		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (sockfd == -1 ) {
+			shim_error("Error while creating socket: %s\n",
+					strerror(errno));
+			goto out;
+		}
+
+		remote.sun_family = AF_UNIX;
+		remote.sun_path[path_size-1] = '\0';
+		strncpy(remote.sun_path, shim->proxy_address,
+				path_size - 2);
+
+		if (connect(sockfd, (struct sockaddr *)&remote,
+				sizeof(struct sockaddr_un)) == -1) {
+			shim_error("Error while connecting to proxy "
+				"with address %s: %s\n", shim->proxy_address,
+				 strerror(errno));
+			goto out;
+		}
+	} else {
+		struct addrinfo    hints;
+		struct addrinfo   *servinfo, *addr;
+
+		/* Connect to proxy on tcp address+port
+		 */
+		memset(&hints, 0, sizeof hints);
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		/* Avoid service lookups as we provide a numeric port number.
+		 */
+		hints.ai_flags = AI_NUMERICSERV;
+
+		if ( asprintf(&port_str, "%d", shim->proxy_port) == -1) {
+			abort();
+		}
+
+		if ((ret = getaddrinfo(shim->proxy_address, port_str,
+				&hints, &servinfo)) != 0) {
+			shim_error("getaddrinfo error for %s:%d  :%s\n",
+				shim->proxy_address,
+				shim->proxy_port,
+				strerror(errno));
+			goto out;
+		}
+
+
+		// loop through all the results and connect to the first we can
+		for(addr = servinfo; addr != NULL; addr = addr->ai_next) {
+			if ((sockfd = socket(addr->ai_family, addr->ai_socktype,
+				addr->ai_protocol)) == -1) {
+				shim_debug("Error in socket creation for "
+					"%s:%d :%s\n",
+					shim->proxy_address,
+					shim->proxy_port,
+					strerror(errno));
+				continue;
+			}
+
+			if (connect(sockfd, addr->ai_addr, 
+						addr->ai_addrlen) == -1) {
+				close(sockfd);
+				shim_debug("Error in client connection for "
+					"%s:%d : %s\n", shim->proxy_address,
+					shim->proxy_port, strerror(errno));
+				continue;
+			}
+			break;
+		}
+
+		if (addr == NULL) {
+			shim_error("Failed to connect to proxy with address"
+				" %s:%d : %s\n", shim->proxy_address,
+				shim->proxy_port, strerror(errno));
+			goto out;
+		}
+	}
+
+	free(port_str);
+	shim->proxy_sock_fd = sockfd;
+	return true;
+out:
+	free(port_str);
+	if (sockfd >= 0) {
+		close(sockfd);
+	}
+
+	return false;
+}
+
 /*!
  * Print program usage
  */
@@ -613,16 +803,12 @@ main(int argc, char **argv)
 
 	shim_log_init(debug);
 
-	ret = fcntl(shim.proxy_sock_fd, F_GETFD);
-	if (ret == -1) {
-		shim_error("Invalid proxy socket connection fd : %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+	if (! parse_connection_uri(&shim, uri)) {
+		goto out;
 	}
 
-	ret = fcntl(shim.proxy_io_fd, F_GETFD);
-	if (ret == -1) {
-		shim_error("Invalid proxy I/O fd : %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+	if (! connect_to_proxy(&shim)) {
+		goto out;
 	}
 
 	/* Using self pipe trick to handle signals in the main loop, other strategy
@@ -714,6 +900,12 @@ main(int argc, char **argv)
 		}
 	}
 
+out:
 	free(shim.container_id);
-	return 0;
+	free(shim.proxy_address);
+	free(shim.token);
+	if (shim.proxy_sock_fd >= 0) {
+		close (shim.proxy_sock_fd);
+	}
+	return EXIT_FAILURE;
 }
