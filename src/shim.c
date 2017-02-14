@@ -156,97 +156,159 @@ err_exit(const char *format, ...)
 	exit(EXIT_FAILURE);
 }
 
-/*!
- * Construct message in the proxy ctl rpc protocol format
- * Proxy control message format:
+/*
+ * Prepare byte stream in the proxy protocol format.
  *
- * | length  | Reserved| Data(Request/Response   |
- * | . . . . | . . . . | . . . . . . . . . . . . |
- * 0         4         8                         length
- *
- * \param json Json Payload
- * \param[out] len Length of the message
- *
- * \return Newly allocated string on sucess, NULL on failure
+ * \param fr \ref frame
+ * \param [out] total_size Total size of serialized byte stream
  */
-char*
-get_proxy_ctl_msg(const char *json, size_t *len) {
-	char   *proxy_ctl_msg = NULL;
-	size_t  json_len;
+uint8_t*
+serialize_frame(struct frame *fr, ssize_t *total_size)
+{
+	uint8_t *msg = NULL;
 
-	if (! (json && len)) {
+	if (! (fr && total_size)) {
 		return NULL;
 	}
 
-	json_len = strlen(json);
-	*len = json_len + PROXY_CTL_HEADER_SIZE;
-	proxy_ctl_msg = calloc(*len + 1, sizeof(char));
+	/* Header length is length of the header in number of 32 bit words.
+	 * Converting the header length to byte length.
+	 */
+	*total_size = (ssize_t)((fr->header.header_len * sizeof(uint32_t)) + fr->header.payload_len);
 
-	if (! proxy_ctl_msg) {
+	msg = calloc((size_t)(*total_size), sizeof(uint8_t));
+
+	if (! msg) {
 		abort();
 	}
 
-	set_big_endian_32((uint8_t*)proxy_ctl_msg + PROXY_CTL_HEADER_LENGTH_OFFSET, 
-				(uint32_t)(json_len));
-	strncpy(proxy_ctl_msg + PROXY_CTL_HEADER_SIZE, json, json_len);
+	set_big_endian_16(msg, PROXY_VERSION);
+	msg[HEADER_LEN_OFFSET] = fr->header.header_len;
+	msg[RES_OFFSET] =  fr->header.type;
+	msg[OPCODE_OFFSET] =  fr->header.opcode;
+	set_big_endian_32(msg + PAYLOAD_LEN_OFFSET, fr->header.payload_len);
 
-	return proxy_ctl_msg;
- }
+	if (fr->header.payload_len && fr->payload) {
+		strncpy((char *)msg + PAYLOAD_OFFSET, (const char*)fr->payload,
+				fr->header.payload_len);
+	}
+
+	return msg;
+}
 
 /*!
- * Send "hyper" payload to cc-proxy. This will be forwarded to hyperstart.
+ * Write frame to the proxy socket fd.
  *
- * \param fd File descriptor to send the message to(should be proxy ctl socket fd)
- * \param Hyperstart cmd id
- * \param json Json payload
+ * \param shim \ref cc_shim
+ * \param fr \ref frame
+ *
+ * \return true on success, false otherwise
  */
-void
-send_proxy_hyper_message(int fd, const char *hyper_cmd, const char *json) {
-	char      *proxy_payload = NULL;
-	char      *proxy_command_id = "hyper";
-	char      *proxy_ctl_msg = NULL;
-	size_t     len = 0, offset = 0;
+bool
+write_frame(struct cc_shim *shim, struct frame *fr)
+{
+	size_t     offset = 0;
 	ssize_t    ret;
+	ssize_t    total_size = 0;
 
-	/* cc-proxy has the following format for "hyper" payload:
-	 * {
-	 *    "id": "hyper",
-	 *    "data": {
-	 *        "hyperName": "ping",
-	 *        "data": "json payload",
-	 *    }
-	 * }
-	*/
-
-	if ( !json || fd < 0) {
-		return;
+	if (! (shim && fr)) {
+		return false;
 	}
 
+	uint8_t *msg = serialize_frame(fr, &total_size);
 
-	ret = asprintf(&proxy_payload,
-			"{\"id\":\"%s\",\"data\":{\"hyperName\":\"%s\",\"data\":%s}}",
-			proxy_command_id, hyper_cmd, json);
-
-	if (ret == -1) {
-		abort();
+	if (! msg ) {
+		return false;
 	}
 
-	proxy_ctl_msg = get_proxy_ctl_msg(proxy_payload, &len);
-	free(proxy_payload);
-
-	while (offset < len) {
-		ret = write(fd, proxy_ctl_msg + offset, len-offset);
+	while (offset < total_size) {
+		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
 		if (ret == EINTR) {
 			continue;
 		}
 		if (ret <= 0 ) {
-			free(proxy_ctl_msg);
+			free(msg);
 			shim_error("Error writing to proxy: %s\n", strerror(errno));
-			return;
+			return false;
 		}
 		offset += (size_t)ret;
 	}
-	free(proxy_ctl_msg);
+	free(msg);
+	return true;
+}
+
+/*!
+ * Send message to proxy.
+ *
+ * \param shim \ref cc_shim
+ * \param type Type of message
+ * \param opcode Opcode of message type
+ * \param payload Payload to be sent
+ * 
+ * \return true on success, false otherwise
+ */
+bool
+send_proxy_message(struct cc_shim *shim, uint8_t type, uint8_t opcode,
+			const char *payload)
+{
+	struct frame fr = { 0 };
+	bool ret;
+
+	if ( !shim || shim->proxy_sock_fd < 0) {
+		return false;
+	}
+
+	fr.header.version = PROXY_VERSION;
+	fr.header.header_len = MIN_HEADER_WORD_SIZE;
+	fr.header.type = type;
+	fr.header.opcode = opcode;
+
+	shim_debug("Sending frame of type:%d, opcode:%d, payload:%s\n",
+			fr.header.type,
+			fr.header.opcode,
+			payload? payload:"(empty)");
+
+	if (payload) {
+		fr.header.payload_len = (uint32_t)strlen(payload);
+		fr.payload = (uint8_t*)payload;
+	}
+
+	ret = write_frame(shim, &fr);
+	return ret;
+}
+
+/*!
+ * Send Connect command to proxy.
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false otherwise
+ */
+bool
+send_connect_command(struct cc_shim *shim)
+{
+	char *payload = NULL;
+	bool ret;
+
+	if (! shim) {
+		return false;
+	}
+
+	if ((! shim->token) || (shim->proxy_sock_fd < 0)) {
+		return false;
+	}
+
+	// TODO: Verify the payload format
+	ret = asprintf(&payload,
+			"{\"token\":\"%s\"}", shim->token);
+
+	if (! payload) {
+		abort();
+	}
+
+	ret = send_proxy_message(shim, frametype_command, cmd_connectshim, payload);
+	free(payload);
+	return ret;
 }
 
 /*!
@@ -808,6 +870,13 @@ main(int argc, char **argv)
 	}
 
 	if (! connect_to_proxy(&shim)) {
+		goto out;
+	}
+
+	/* Send a Connect command to the proxy and wait for the response
+	 */
+	if (! send_connect_command(&shim)) {
+		shim_error("Could not send connect command to proxy\n");
 		goto out;
 	}
 
