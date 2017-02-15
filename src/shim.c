@@ -361,9 +361,7 @@ handle_signals(struct cc_shim *shim) {
 }
 
 /*!
- * Read data from stdin(with tty set in raw mode)
- * and send it to proxy I/O channel
- * Reference : https://github.com/hyperhq/runv/blob/master/hypervisor/tty.go#L448
+ * Read data from stdin and send it to proxy.
  *
  * \param shim \ref cc_shim
  */
@@ -371,15 +369,13 @@ void
 handle_stdin(struct cc_shim *shim)
 {
 	ssize_t        nread;
-	int            ret;
-	ssize_t        len;
-	static uint8_t buf[BUFSIZ+STREAM_HEADER_SIZE];
+	char           buf[BUFSIZ] = { 0 };
 
-	if (! shim || shim->proxy_io_fd < 0) {
+	if (! shim || shim->proxy_sock_fd < 0) {
 		return;
 	}
 
-	nread = read(STDIN_FILENO , buf+STREAM_HEADER_SIZE, BUFSIZ);
+	nread = read(STDIN_FILENO , buf, BUFSIZ);
 	if (nread < 0) {
 		shim_warning("Error while reading stdin char :%s\n", strerror(errno));
 		return;
@@ -390,17 +386,7 @@ handle_stdin(struct cc_shim *shim)
 		poll_fds[STDIN_INDEX].fd = -1;
 	}
 
-	len = nread + STREAM_HEADER_SIZE;
-	set_big_endian_64 (buf, shim->io_seq_no);
-	set_big_endian_32 (buf + STREAM_HEADER_LENGTH_OFFSET, (uint32_t)len);
-
-	// TODO: handle write in the poll loop to account for write blocking
-	ret = (int)write(shim->proxy_io_fd, buf, (size_t)len);
-	if (ret == -1) {
-		shim_warning("Error writing from fd %d to fd %d: %s\n",
-			     STDIN_FILENO, shim->proxy_io_fd, strerror(errno));
-		return;
-	}
+	send_proxy_message(shim, type_stream, stream_stdin, buf);
 }
 
 /*!
