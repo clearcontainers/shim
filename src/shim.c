@@ -319,42 +319,44 @@ send_connect_command(struct cc_shim *shim)
 void
 handle_signals(struct cc_shim *shim) {
 	int                sig;
-	char              *buf;
 	int                ret;
-	char              *cmd = NULL;
 	struct winsize     ws;
-	static char*       cmds[] = { "winsize", "killcontainer"};
+	char              *payload = NULL;
 
-	if ( !(shim && shim->container_id) || shim->proxy_sock_fd < 0) {
+	if ( !shim  || shim->proxy_sock_fd < 0) {
 		return;
 	}
 
 	while (read(signal_pipe_fd[0], &sig, sizeof(sig)) != -1) {
-		shim_debug("Handling signal : %d on fd %d\n", sig, signal_pipe_fd[0]);
+		shim_debug("Handling signal : %d on fd %d\n", sig,
+				signal_pipe_fd[0]);
 		if (sig == SIGWINCH ) {
-			cmd = cmds[0];
 			if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == -1) {
-				shim_warning("Error getting the current window size: %s\n",
+				shim_warning("Error getting the current"\
+					"window size: %s\n",
 					strerror(errno));
 				continue;
 			}
-			ret = asprintf(&buf, "{\"seq\":%"PRIu64", \"row\":%d, \"column\":%d}",
-					shim->io_seq_no, ws.ws_row, ws.ws_col);
-			shim_debug("handled SIGWINCH for container %s (row=%d, column=%d)\n",
+			ret = asprintf(&payload, "{\"data\" : {\"signal\": %d,"\
+					" \"row\":%d, \"column\":%d}}",
+					 sig, ws.ws_row, ws.ws_col);
+
+			shim_debug("handled SIGWINCH for container %s "\
+				"(row=%d, column=%d)\n",
 				shim->container_id, ws.ws_row, ws.ws_col);
 
 		} else {
-			cmd = cmds[1];
-			ret = asprintf(&buf, "{\"container\":\"%s\", \"signal\":%d}",
-                                                        shim->container_id, sig);
-			shim_debug("Killed container %s with signal %d\n", shim->container_id, sig);
+			ret = asprintf(&payload, "{\"data\":{\"signal\":%d}}",
+                                                         sig);
+			shim_debug("Killed container %s with signal %d\n", 
+					shim->container_id, sig);
 		}
 		if (ret == -1) {
 			abort();
 		}
 
-		send_proxy_hyper_message(shim->proxy_sock_fd, cmd, buf);
-		free(buf);
+		send_proxy_message(shim, type_command, cmd_signal, payload);
+		free(payload);
         }
 }
 
