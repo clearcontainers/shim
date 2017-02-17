@@ -22,10 +22,6 @@
 struct cc_shim {
 	char       *container_id;
 	int         proxy_sock_fd;
-	int         proxy_io_fd;
-	uint64_t    io_seq_no;
-	uint64_t    err_seq_no;
-	bool        exiting;
 	char       *token;
 	char       *proxy_address;
 	int         proxy_port;
@@ -88,33 +84,3 @@ enum stream {
 enum notificationtype {
 	notification_exitcode = 0,
 };
-
-/*
- * control message format
- * | ctrl id | length  | payload (length-8)      |
- * | . . . . | . . . . | . . . . . . . . . . . . |
- * 0         4         8                         length
- */
-#define CONTROL_HEADER_SIZE             8
-#define CONTROL_HEADER_LENGTH_OFFSET    4
-
-/*
- * stream message format
- * | stream sequence | length  | payload (length-12)     |
- * | . . . . . . . . | . . . . | . . . . . . . . . . . . |
- * 0                 8         12                        length
- */
-#define STREAM_HEADER_SIZE              12
-#define STREAM_HEADER_LENGTH_OFFSET     8
-
-#define PROXY_CTL_HEADER_SIZE           8
-#define PROXY_CTL_HEADER_LENGTH_OFFSET  0
-
-/*
- * Hyperstart is limited to sending this number of bytes to
- * a client.
- *
- * (This value can be determined by inspecting the hyperstart
- * source where hyper_event_ops->wbuf_size is set).
- */
-#define HYPERSTART_MAX_RECV_BYTES       10240

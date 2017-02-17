@@ -516,177 +516,6 @@ handle_stdin(struct cc_shim *shim)
 }
 
 /*!
- * Read and parse I/O message on proxy I/O fd
- *
- * \param shim \ref cc_shim
- * \param[out] seq Seqence number of the I/O stream
- * \param[out] stream_len Length of the data received
- *
- * \return newly allocated string on success, else \c NULL.
- */
-char*
-read_IO_message(struct cc_shim *shim, uint64_t *seq, ssize_t *stream_len) {
-	char *buf = NULL;
-	ssize_t need_read = STREAM_HEADER_SIZE;
-	ssize_t bytes_read = 0, want, ret;
-	ssize_t max_bytes = HYPERSTART_MAX_RECV_BYTES;
-
-	if (! (shim && seq && stream_len)) {
-		return NULL;
-	}
-
-	*stream_len = 0;
-
-	buf = calloc(STREAM_HEADER_SIZE, 1);
-	if (! buf ) {
-		abort();
-	}
-
-	while (bytes_read < need_read) {
-		want = need_read - bytes_read;
-		if (want > BUFSIZ)  {
-			want = BUFSIZ;
-		}
-
-		ret = read(shim->proxy_io_fd, buf+bytes_read, (size_t)want);
-		if (ret == -1) {
-			free(buf);
-			err_exit("Error reading from proxy I/O fd: %s\n", strerror(errno));
-		} else if (ret == 0) {
-			/* EOF received on proxy I/O fd*/
-			free(buf);
-			err_exit("EOF received on proxy I/O fd\n");
-		}
-
-		bytes_read += ret;
-
-		if (*stream_len == 0 && bytes_read >= STREAM_HEADER_SIZE) {
-			*stream_len = get_big_endian_32((uint8_t*)(buf+STREAM_HEADER_LENGTH_OFFSET));
-
-			// length is 12 when hyperstart sends eof before sending exit code
-			if (*stream_len == STREAM_HEADER_SIZE) {
-				break;
-			}
-
-			/* Ensure amount of data is within expected bounds */
-			if (*stream_len > max_bytes) {
-				shim_warning("message too big (limit is %lu, but proxy returned %lu)",
-						(unsigned long int)max_bytes,
-						(unsigned long int)stream_len);
-				goto err;
-			}
-
-			if (*stream_len > STREAM_HEADER_SIZE) {
-				need_read = *stream_len;
-				buf = realloc(buf, (size_t)*stream_len);
-				if (! buf) {
-					abort();
-				}
-			}
-		}
-	}
-	*seq = get_big_endian_64((uint8_t*)buf);
-	return buf;
-
-err:
-	free(buf);
-	return NULL;
-}
-
-/*!
- * Handle output on the proxy I/O fd
- *
- *\param shim \ref cc_shim
- */
-void
-handle_proxy_output(struct cc_shim *shim)
-{
-	uint64_t  seq;
-	char     *buf = NULL;
-	int       outfd;
-	ssize_t   stream_len = 0;
-	ssize_t   ret;
-	ssize_t   offset;
-	int       code = 0;
-
-	if (shim == NULL) {
-		return;
-	}
-
-	buf = read_IO_message(shim, &seq, &stream_len);
-	if ((! buf) || (stream_len <= 0) || (stream_len > HYPERSTART_MAX_RECV_BYTES)) {
-		/*TODO: is exiting here more appropriate, since this denotes
-		 * error communicating with proxy or proxy has exited
-		 */
-		goto out;
-	}
-
-	if (seq == shim->io_seq_no) {
-		outfd = STDOUT_FILENO;
-	} else if (seq == shim->io_seq_no + 1) {//proxy allocates errseq 1 higher
-		outfd = STDERR_FILENO;
-	} else {
-		shim_warning("Seq no %"PRIu64 " received from proxy does not match with\
-				 shim seq %"PRIu64 "\n", seq, shim->io_seq_no);
-		goto out;
-	}
-
-	if (!shim->exiting && stream_len == STREAM_HEADER_SIZE) {
-		shim->exiting = true;
-		goto out;
-	} else if (shim->exiting && stream_len == (STREAM_HEADER_SIZE+1)) {
-		code = *(buf + STREAM_HEADER_SIZE); 	// hyperstart has sent the exit status
-		shim_debug("Exit status for container: %d\n", code);
-		free(buf);
-		restore_terminal();
-		exit(code);
-	}
-
-	/* TODO: what if writing to stdout/err blocks? Add this to the poll loop
-	 * to watch out for EPOLLOUT
-	 */
-	offset = STREAM_HEADER_SIZE;
-	while (offset < stream_len) {
-		ret = write(outfd, buf+offset, (size_t)(stream_len-offset));
-		if (ret <= 0 ) {
-			goto out;
-		}
-		offset += (ssize_t)ret;
-	}
-
-out:
-	if (buf) {
-		free (buf);
-	}
-}
-
-/*!
- * Handle data on the proxy ctl socket fd
- *
- *\param shim \ref cc_shim
- */
-void
-handle_proxy_ctl(struct cc_shim *shim)
-{
-	char buf[LINE_MAX] = { 0 };
-	ssize_t ret;
-
-	if (! shim) {
-		return;
-	}
-
-	ret = read(shim->proxy_sock_fd, buf, LINE_MAX-1);
-	if (ret == -1) {
-		err_exit("Error reading from the proxy ctl socket: %s\n", strerror(errno));
-	} else if (ret == 0) {
-		err_exit("EOF received on proxy ctl socket. Proxy has exited\n");
-	}
-
-	//TODO: Parse the json and log error responses explicitly
-	shim_debug("Proxy response:%s\n", buf + PROXY_CTL_HEADER_SIZE);
-}
-
-/*!
  * Handle response received from proxy
  *
  *\param shim \ref cc_shim
@@ -1062,10 +891,6 @@ main(int argc, char **argv)
 	struct cc_shim shim = {
 		.container_id   =  NULL,
 		.proxy_sock_fd  = -1,
-		.proxy_io_fd    = -1,
-		.io_seq_no      =  0,
-		.err_seq_no     =  0,
-		.exiting        =  false,
 		.token          =  NULL,
 		.proxy_address  =  NULL,
 		.proxy_port     =  -1,
@@ -1074,7 +899,6 @@ main(int argc, char **argv)
 	struct sigaction   sa;
 	int                c;
 	bool               debug = false;
-	long long          val;
 	char              *uri = NULL;
 
 	program_name = argv[0];
