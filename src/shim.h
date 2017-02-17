@@ -85,6 +85,10 @@ enum stream {
 	stream_stderr,
 };
 
+enum notificationtype {
+	notification_exitcode = 0,
+};
+
 /*
  * control message format
  * | ctrl id | length  | payload (length-8)      |
