@@ -27,6 +27,22 @@ struct cc_shim {
 	int         proxy_port;
 };
 
+/* 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+ * ┌────────────────────────────┬───────────────┬───────────────┐
+ * │          Version           │ Header Length │   Reserved    │
+ * ├────────────────────────────┼─────┬─┬───────┼───────────────┤
+ * │          Reserved          │ Res.│E│ Type  │    Opcode     │
+ * ├────────────────────────────┴─────┴─┴───────┴───────────────┤
+ * │                      Payload Length                        │
+ * ├────────────────────────────────────────────────────────────┤
+ * │                                                            │
+ * │                         Payload                            │
+ * │                                                            │
+ * │      (variable length, optional and opcode-specific)       │
+ * │                                                            │
+ * └────────────────────────────────────────────────────────────┘
+ */
+
 // Header size is length of header in 32 bit words.
 #define  MIN_HEADER_WORD_SIZE    3
 
