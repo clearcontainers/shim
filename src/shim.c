@@ -537,6 +537,14 @@ handle_proxy_response(struct cc_shim *shim, struct frame *fr)
 		shim_error("Error response received from proxy at %s: %s\n", 
 				shim->proxy_address,
 				fr->payload ? (char*)fr->payload:"");
+
+		/* If we receive an error with the ConnectShim response,
+		 * the proxy could not validate the token.
+		 */
+		if (fr->header.opcode == cmd_connectshim) {
+			err_exit("Shim received an error in response"
+				"to ConnectShim command, exiting");
+		}
 	} else {
 		/* TODO: Currently logging response. Do we want to track responses
 		 * to requests in future. Maybe useful for restarting connection with proxy
