@@ -19,6 +19,8 @@
 extern int shim_signal_table[];
 
 bool set_fd_nonblocking(int fd);
+int verify_base64url_format(char *s);
+
 void set_big_endian_16(uint8_t *buf, uint16_t val);
 uint16_t get_big_endian_16(const uint8_t *buf);
 void set_big_endian_32(uint8_t *buf, uint32_t val);

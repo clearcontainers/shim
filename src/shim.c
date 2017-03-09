@@ -297,6 +297,12 @@ send_connect_command(struct cc_shim *shim)
 		return false;
 	}
 
+	if ( verify_base64url_format(shim->token) != 0) {
+		shim_error("Invalid token: %s, base64 encoded token expected\n",
+				shim->token);
+		return false;
+	}
+
 	// TODO: Verify the payload format
 	ret = asprintf(&payload,
 			"{\"token\":\"%s\"}", shim->token);
