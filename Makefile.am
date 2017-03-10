@@ -32,3 +32,9 @@ cc_shim_SOURCES = \
 	src/utils.h \
 	src/log.c \
 	src/log.h
+
+check : check-shim
+
+check-shim:
+	$(AM_V_GEN)shim_test_common_args="-v -timeout 20s  $(srcdir)/tests -shimpath $(abs_builddir)/cc-shim" ; \
+	go test -race $$shim_test_common_args || go test $$shim_test_common_args
