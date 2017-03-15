@@ -30,7 +30,7 @@ import (
 )
 
 const testContainerid = "123456789"
-const testToken = "testtoken"
+const testToken = "pF56IaDpuax6hihJ5PneB8JypqmOvjkqY-wKGVYqgIM="
 
 // Proxy is an object mocking clearcontainers Proxy
 type Proxy struct {
@@ -65,7 +65,14 @@ func NewProxy(t *testing.T, path string) *Proxy {
 		ShimConnected:    make(chan bool),
 		ShimDisconnected: make(chan bool),
 		StdinReceived:    make(chan bool),
+		token:            testToken,
 	}
+}
+
+// GetProxyToken returns the token that mock proxy uses
+// to verify its client connection
+func (proxy *Proxy) GetProxyToken() string {
+	return proxy.token
 }
 
 func newSignalList() []ShimSignal {
@@ -111,7 +118,9 @@ func connectShimHandler(data []byte, userData interface{}, response *handlerResp
 	err := json.Unmarshal(data, &payload)
 	assert.Nil(proxy.t, err)
 
-	assert.Equal(proxy.t, payload.Token, testToken)
+	if payload.Token != proxy.token {
+		response.SetErrorMsg("Invalid Token")
+	}
 
 	proxy.logF("ConnectShim(token=%s)", payload.Token)
 
@@ -241,8 +250,7 @@ func (proxy *Proxy) Stop() {
 }
 
 const (
-	minHeaderLength = 12
-	flagInError     = 1 << (4 + iota)
+	flagInError = 1 << (4 + iota)
 )
 
 const minHeaderLength = 12

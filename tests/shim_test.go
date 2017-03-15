@@ -55,7 +55,18 @@ func newTestRig(t *testing.T) *testRig {
 }
 
 const testContainerid = "123456789"
-const testToken = "testtoken"
+
+type tokenType int
+
+const (
+	validToken = iota
+
+	//Token in base64url encoding, but not the same as proxy
+	incorrectToken
+
+	//Token provided not in base64 encoding
+	invalidToken
+)
 
 var shimPath string
 
@@ -67,7 +78,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func (rig *testRig) Start() {
+func (rig *testRig) Start(tokenT tokenType) {
+	var token string
+
 	proxySocketPath := hypermock.GetTmpPath("test-proxy.%s.sock")
 	rig.proxy = mock.NewProxy(rig.t, proxySocketPath)
 	rig.proxy.Start()
@@ -77,19 +90,29 @@ func (rig *testRig) Start() {
 		Path:   proxySocketPath,
 	}
 
-	rig.shimCommand = rig.getShimCommand(url.String())
+	if tokenT == invalidToken {
+		token = "testtoken"
+	} else if tokenT == incorrectToken {
+		token = "RidbiogVs8QCbta0uj2FJRjjnLcPagpqjZceJKvu4MA="
+	} else {
+		token = rig.proxy.GetProxyToken()
+	}
+
+	assert.NotNil(rig.t, token)
+
+	rig.shimCommand = rig.getShimCommand(url.String(), token)
 	err := rig.shimCommand.Start()
 	assert.Nil(rig.t, err)
 	rig.t.Logf("shim started\n")
 }
 
-func (rig *testRig) getShimCommand(uri string) *exec.Cmd {
+func (rig *testRig) getShimCommand(uri string, token string) *exec.Cmd {
 	var err error
 
 	args := []string{
 		"--container-id", testContainerid,
 		"--uri", uri,
-		"--token", testToken,
+		"--token", token,
 		//"--debug",
 	}
 
@@ -129,7 +152,8 @@ func (rig *testRig) checkShimRunning() error {
 
 func TestShimConnectToProxy(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	//rig.Start(tokenType(validToken))
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
@@ -145,9 +169,33 @@ func TestShimConnectToProxy(t *testing.T) {
 	<-rig.proxy.ShimConnected
 }
 
+func TestShimExitWithIncorrectBase64Token(t *testing.T) {
+	rig := newTestRig(t)
+	rig.Start(incorrectToken)
+	assert.NotNil(t, rig.proxy)
+
+	defer rig.Stop()
+
+	//Shim should have sent connect
+	<-rig.proxy.ShimConnected
+
+	//Wait for shim to connect to exit
+	cmd := rig.shimCommand
+	assert.NotNil(rig.t, cmd.Process)
+	err := cmd.Wait()
+	assert.NotNil(rig.t, err)
+
+	processState := cmd.ProcessState
+	assert.NotNil(rig.t, processState)
+	ws := processState.Sys().(syscall.WaitStatus)
+	assert.NotNil(rig.t, ws)
+	exitCode := ws.ExitStatus()
+	assert.Equal(rig.t, exitCode, 1)
+}
+
 func TestShimStdout(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
@@ -171,7 +219,7 @@ func TestShimStdout(t *testing.T) {
 
 func TestShimStderr(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
@@ -194,7 +242,7 @@ func TestShimStderr(t *testing.T) {
 
 func TestShimSignals(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
@@ -223,7 +271,7 @@ func TestShimSignals(t *testing.T) {
 
 func TestShimExitNotification(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
@@ -253,7 +301,7 @@ func TestShimExitNotification(t *testing.T) {
 
 func TestShimSendingStdin(t *testing.T) {
 	rig := newTestRig(t)
-	rig.Start()
+	rig.Start(validToken)
 	assert.NotNil(t, rig.proxy)
 
 	defer rig.Stop()
