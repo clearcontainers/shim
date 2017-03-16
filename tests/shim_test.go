@@ -193,6 +193,42 @@ func TestShimExitWithIncorrectBase64Token(t *testing.T) {
 	assert.Equal(rig.t, exitCode, 1)
 }
 
+func TestShimExitWithNonBase64Token(t *testing.T) {
+	rig := newTestRig(t)
+	rig.Start(invalidToken)
+	assert.NotNil(t, rig.proxy)
+
+	defer rig.Stop()
+
+	//Wait for shim to connect to exit
+	cmd := rig.shimCommand
+	assert.NotNil(rig.t, cmd.Process)
+	err := cmd.Wait()
+	assert.NotNil(rig.t, err)
+
+	timedout := false
+	timer := make(chan bool, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		timer <- true
+	}()
+
+	select {
+	case <-rig.proxy.ShimConnected:
+		// Shim sent connect msg to proxy!
+	case <-timer:
+		timedout = true
+	}
+	assert.Equal(rig.t, timedout, true)
+
+	processState := cmd.ProcessState
+	assert.NotNil(rig.t, processState)
+	ws := processState.Sys().(syscall.WaitStatus)
+	assert.NotNil(rig.t, ws)
+	exitCode := ws.ExitStatus()
+	assert.Equal(rig.t, exitCode, 1)
+}
+
 func TestShimStdout(t *testing.T) {
 	rig := newTestRig(t)
 	rig.Start(validToken)
