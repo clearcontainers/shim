@@ -528,21 +528,23 @@ handle_proxy_response(struct cc_shim *shim, struct frame *fr)
 		return;
 	}
 
-	if ( ! ( fr && fr->payload)) {
+	if ( !fr) {
 		return;
 	}
 
 	// Reponses received from proxy are currently just logged.
 	if (fr->header.err) {
 		shim_error("Error response received from proxy at %s: %s\n", 
-				shim->proxy_address, fr->payload);
+				shim->proxy_address,
+				fr->payload ? (char*)fr->payload:"");
 	} else {
 		/* TODO: Currently logging response. Do we want to track responses
 		 * to requests in future. Maybe useful for restarting connection with proxy
 		 * and resending requests that were missed.
 		 */
 		shim_debug("Response received from proxy at %s: %s\n", 
-				shim->proxy_address, fr->payload);
+				shim->proxy_address,
+				fr->payload ? (char*)fr->payload:"");
 	}
 }
 
