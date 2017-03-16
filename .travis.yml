@@ -12,8 +12,6 @@ env:
    - secure: "kfVYmDS4SJPlDVZM++jfkBpRq/ET/EFn6kaYlWnW3udZ7Xpqr7DC9DyUa55gil83M+TjBMCjaGL4jQD7TREywohnYcy6134CwZwhCGZpFGioJVv4OH2Np5G8HFHId26qrtllC7lv0J97ZBmGCs7muP27h6HfDeDCavbHGcrjH+1x4uTi/0M7a5ABtvzWE/JspUNN84Es9ARSkCOqNKjdTT8D/QgcnVQ3a0VHJvk7q/1ZLeRf9D28rlpv7bSC/+kUDRul63hYCqnLW0dFuvx8idlDQ9S2Q9G0vxY8w9rSjGhJ7z8OvV/s4quBEnbFnE7YIhlUKsI/ouF8zRHDb+h8pmT4eIq137RKEt2l8Uee2vjVnbKbCEMW52VggO/NM+8Zu1tFX1pjCVFmN0Aw0HggMbevG/daGbVkx1CJzgfOFWN3rDyODUoaF44MOEJQDKNLfck2fJmuAZc14Px3mEVeNKVfU6xFxHhnThOk9Xpzmi4dOnH1uoVtqqSbNMNepNHRiufaS+Ad6CzJBAl3i9Uu2jDevTkHc76zCMyZ1T2e5Esbs27ms98YzW/MyMHF5421peyz7UbwUzP3JhEhEqBH8ubjXKdoysruBU7gI7tXIaQSsh2fFiLsY4M+6+0bHagG1kuskeCudnkSj9P2b7ffheVXagC3CLUTlNzMFt/EMpY="
    - coverity_scan_run_condition='"$CC" = gcc'
 
-script: ./autogen.sh && make
-
 addons:
   coverity_scan:
     project:
@@ -23,3 +21,11 @@ addons:
     build_command_prepend: "./configure; make clean"
     build_command:   "make -j 4"
     branch_pattern: coverity_scan
+
+before_script:
+- ".ci/ci-setup.sh"
+
+script: 
+- ./autogen.sh
+- make
+- make check
