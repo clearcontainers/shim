@@ -12,9 +12,9 @@
 *.trs
 aclocal.m4
 autom4te.cache
-cc-shim
+/cc-shim
 compile
-config.*
+/config.*
 configure
 cscope.files
 cscope.in.out
