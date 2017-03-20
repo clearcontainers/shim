@@ -18,7 +18,7 @@ set -e -x
 #
 # Install go
 #
-go_version=1.8
+go_version=1.7
 export GOROOT=$HOME/go
 export GOPATH=$HOME/gopath
 export PATH=$GOROOT/bin:$GOPATH/bin:$PATH
