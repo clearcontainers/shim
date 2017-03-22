@@ -1,3 +1,4 @@
+sudo: required
 language: c
 dist: trusty
 
@@ -26,6 +27,6 @@ before_script:
 - ".ci/ci-setup.sh"
 
 script: 
-- ./autogen.sh
+- ./autogen.sh --enable-cppcheck
 - make
 - make check

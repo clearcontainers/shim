@@ -44,6 +44,8 @@ AC_TYPE_SIZE_T
 AC_FUNC_FORK
 AC_CHECK_FUNCS([atexit dup2 memset strdup])
 
+AC_CHECK_PROG(GO,[go],[yes],[no])
+
 AC_ARG_ENABLE(cppcheck, AS_HELP_STRING([--enable-cppcheck], [enable static analysis @<:@default=no@:>@]),
           [], [enable_cppcheck=no])
 AS_IF([test x"$enable_cppcheck" = "xyes"],

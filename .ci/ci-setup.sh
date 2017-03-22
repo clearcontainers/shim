@@ -39,3 +39,11 @@ cp -r vendor/* "$GOPATH/src"
 # self-import internal packages
 mkdir -p "$GOPATH/src/github.com/clearcontainers/"
 ln -s "$PWD" "$GOPATH/src/github.com/clearcontainers/"
+
+#
+# Install packages
+#
+pkgs="cppcheck"
+
+sudo apt-get -qq update
+eval sudo apt-get -qq install "$pkgs"
