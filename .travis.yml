@@ -27,6 +27,4 @@ before_script:
 - ".ci/ci-setup.sh"
 
 script: 
-- ./autogen.sh --enable-cppcheck
-- make
-- make check
+- ".ci/ci-build.sh"

@@ -15,13 +15,12 @@
 
 set -e -x
 
+source $(dirname "$0")/go-env.sh
+
 #
 # Install go
 #
 go_version=1.7
-export GOROOT=$HOME/go
-export GOPATH=$HOME/gopath
-export PATH=$GOROOT/bin:$GOPATH/bin:$PATH
 
 go_tarball="go${go_version}.linux-amd64.tar.gz"
 curl -L -O "https://storage.googleapis.com/golang/$go_tarball"
