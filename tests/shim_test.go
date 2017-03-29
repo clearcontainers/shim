@@ -316,6 +316,12 @@ func TestShimExitNotification(t *testing.T) {
 	assert.Nil(rig.t, err)
 	<-rig.proxy.ShimConnected
 
+	// Adding  a delay here to make sure that earlier response from the
+	// proxy is sent to the shim, before the shim exits after receiving
+	// exit notification. Required only for testing, to make sure
+	// shimDisconnected channel is written to.
+	time.Sleep(200 * time.Millisecond)
+
 	payload := make([]byte, 1)
 	payload[0] = 127
 	rig.proxy.SendExitNotification(payload)
