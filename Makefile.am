@@ -49,3 +49,8 @@ cppcheck:
 		--error-exitcode=1 -I$(srcdir)/src $(srcdir)/src
 endif
 
+EXTRA_DIST= \
+	.ci \
+	vendor \
+	CONTRIBUTING.md \
+	README.md
