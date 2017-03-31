@@ -312,6 +312,11 @@ send_connect_command(struct cc_shim *shim)
 	}
 
 	ret = send_proxy_message(shim, frametype_command, cmd_connectshim, payload);
+	if (! ret) {
+		shim_error("Could not send initial connect command to "
+				"proxy at %s\n", shim->proxy_address);
+	}
+
 	free(payload);
 	return ret;
 }
@@ -342,7 +347,7 @@ bool read_wire_data(int fd, uint8_t *buf, ssize_t size)
 			// to proxy.
 			exit(EXIT_FAILURE);
 		} else if (ret < 0) {
-			shim_error("Failed to write to fd: %s\n", 
+			shim_error("Failed to read from fd: %s\n",
 				strerror(errno));
 			return false;
 		}
@@ -411,6 +416,8 @@ read_frame(struct cc_shim *shim)
 
 	if (! read_wire_data(shim->proxy_sock_fd, buf + size,
 			(ssize_t)(header_size_in_bytes) - (ssize_t)size)) {
+		shim_error("Error while reading frame from proxy at %s\n",
+				shim->proxy_address);
 		goto error;
 	}
 
@@ -434,6 +441,14 @@ read_frame(struct cc_shim *shim)
 	} else {
 		free(buf);
 	}
+
+	shim_debug("Frame read - HeaderLength: %d, Version: %d, "
+			"Payloadlen: %d, Type:%d, "
+			"Opcode: %d, Err:%d\n",
+			fr->header.header_len, fr->header.version,
+			fr->header.payload_len, fr->header.type,
+			fr->header.opcode, fr->header.err);
+
 	return fr;
 
 error:
@@ -489,7 +504,12 @@ handle_signals(struct cc_shim *shim) {
 			abort();
 		}
 
-		send_proxy_message(shim, frametype_command, cmd_signal, payload);
+		if (! send_proxy_message(shim, frametype_command,
+					cmd_signal, payload)) {
+			shim_error("Could not send signal command "
+					"to proxy %s\n", shim->proxy_address);
+		}
+
 		free(payload);
         }
 }
@@ -520,7 +540,10 @@ handle_stdin(struct cc_shim *shim)
 		poll_fds[STDIN_INDEX].fd = -1;
 	}
 
-	send_proxy_message(shim, frametype_stream, stream_stdin, buf);
+	if (! send_proxy_message(shim, frametype_stream, stream_stdin, buf)) {
+		shim_error("Could not send stdin stream to proxy at %s\n",
+				shim->proxy_address);
+	}
 }
 
 /*!
@@ -631,8 +654,13 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 		 * with the exit code
 		*/
 		code = *(fr->payload);
-		send_proxy_message(shim, frametype_command, cmd_disconnectshim,
-					 NULL);
+
+		if (! send_proxy_message(shim, frametype_command,
+					cmd_disconnectshim, NULL)) {
+			shim_error("Could not send Disconnect shim command "
+				"to proxy at %s\n", shim->proxy_address);
+		}
+
 		shim_debug("Exit status for container: %d\n", code);
 		restore_terminal();
 		exit(code);
@@ -1013,10 +1041,12 @@ main(int argc, char **argv)
 
 	/* Send a Connect command to the proxy and wait for the response
 	 */
+	shim_debug("Sending initial connect command\n");
 	if (! send_connect_command(&shim)) {
 		shim_error("Could not send connect command to proxy\n");
 		goto out;
 	}
+
 	add_pollfd(poll_fds, PROXY_SOCK_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
 
 	/* Add stdin only if it is attached to a terminal.
