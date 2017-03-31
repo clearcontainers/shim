@@ -473,15 +473,17 @@ handle_signals(struct cc_shim *shim) {
 					" \"row\":%d, \"column\":%d}",
 					 sig, ws.ws_row, ws.ws_col);
 
-			shim_debug("handled SIGWINCH for container %s "\
+			shim_debug("handled SIGWINCH for container %s "
 				"(row=%d, column=%d)\n",
-				shim->container_id, ws.ws_row, ws.ws_col);
+				shim->container_id? shim->container_id: "",
+				ws.ws_row, ws.ws_col);
 
 		} else {
 			ret = asprintf(&payload, "{\"signal\":%d}",
                                                          sig);
 			shim_debug("Killed container %s with signal %d\n", 
-					shim->container_id, sig);
+				shim->container_id? shim->container_id: "",
+				sig);
 		}
 		if (ret == -1) {
 			abort();
@@ -952,10 +954,6 @@ main(int argc, char **argv)
 				print_usage();
 				exit(EXIT_FAILURE);
 		}
-	}
-
-	if ( !shim.container_id) {
-		err_exit("Missing container id\n");
 	}
 
 	if ( !shim.token) {
