@@ -735,6 +735,12 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		if ( !shim->proxy_address) {
 			abort();
 		}
+
+		if (strlen(shim->proxy_address) >= PATH_MAX ) {
+			shim_error("Path provided for the proxy exceeds"
+				"maximum allowed length on paths\n");
+			goto out;
+		}
 		ret = true;
 	} else if (! strncmp(uri, tcp_uri, tcp_uri_len)) {
 		char *port_offset = strstr(uri + tcp_uri_len, ":");
@@ -752,6 +758,12 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		}
 
 		addr_len = port_offset - (uri + tcp_uri_len);
+
+		if (addr_len >= _POSIX_HOST_NAME_MAX) {
+			shim_error("Address provided for the proxy exceeds"
+				"maximum allowed length for hostname\n");
+			goto out;
+		}
 
 		if (addr_len == 0) {
 			shim_error("Missing tcp hostname in uri %s\n", uri);
