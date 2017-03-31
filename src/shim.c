@@ -978,21 +978,6 @@ main(int argc, char **argv)
 
 	shim_log_init(debug);
 
-	if (! parse_connection_uri(&shim, uri)) {
-		goto out;
-	}
-
-	if (! connect_to_proxy(&shim)) {
-		goto out;
-	}
-
-	/* Send a Connect command to the proxy and wait for the response
-	 */
-	if (! send_connect_command(&shim)) {
-		shim_error("Could not send connect command to proxy\n");
-		goto out;
-	}
-
 	/* Using self pipe trick to handle signals in the main loop, other strategy
 	 * would be to clock signals and use signalfd()/ to handle signals synchronously
 	 */
@@ -1018,6 +1003,20 @@ main(int argc, char **argv)
 		err_exit("sigaction");
 	}
 
+	if (! parse_connection_uri(&shim, uri)) {
+		goto out;
+	}
+
+	if (! connect_to_proxy(&shim)) {
+		goto out;
+	}
+
+	/* Send a Connect command to the proxy and wait for the response
+	 */
+	if (! send_connect_command(&shim)) {
+		shim_error("Could not send connect command to proxy\n");
+		goto out;
+	}
 	add_pollfd(poll_fds, PROXY_SOCK_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
 
 	/* Add stdin only if it is attached to a terminal.
