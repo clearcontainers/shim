@@ -250,7 +250,7 @@ bool
 send_proxy_message(struct cc_shim *shim, uint8_t type, uint8_t opcode,
 			const char *payload)
 {
-	struct frame fr = { 0 };
+	struct frame fr = {{ 0 }};
 	bool ret;
 
 	if ( !shim || shim->proxy_sock_fd < 0) {
@@ -390,7 +390,7 @@ read_frame(struct cc_shim *shim)
 		abort();
 	}
 
-	if (! read_wire_data(shim->proxy_sock_fd, buf, size)) {
+	if (! read_wire_data(shim->proxy_sock_fd, buf, (ssize_t)size)) {
 		goto error;
 	}
 
@@ -902,6 +902,7 @@ connect_to_proxy(struct cc_shim *shim)
 			if (connect(sockfd, addr->ai_addr, 
 						addr->ai_addrlen) == -1) {
 				close(sockfd);
+				sockfd = -1;
 				shim_debug("Error in client connection for "
 					"%s:%d : %s\n", shim->proxy_address,
 					shim->proxy_port, strerror(errno));
@@ -914,8 +915,10 @@ connect_to_proxy(struct cc_shim *shim)
 			shim_error("Failed to connect to proxy with address"
 				" %s:%d : %s\n", shim->proxy_address,
 				shim->proxy_port, strerror(errno));
+			freeaddrinfo(servinfo);
 			goto out;
 		}
+		freeaddrinfo(servinfo);
 	}
 
 	free(port_str);
