@@ -32,6 +32,11 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <termios.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <netdb.h>
 
 #include "utils.h"
 #include "log.h"
@@ -43,9 +48,8 @@ struct pollfd poll_fds[MAX_POLL_FDS] = {{-1}};
 
 // File descriptors are added at specific index in the poll_fds array
 #define SIGNAL_FD_INDEX 0
-#define PROXY_IO_INDEX 1
-#define PROXY_CTL_INDEX 2
-#define STDIN_INDEX 3
+#define PROXY_SOCK_INDEX 1
+#define STDIN_INDEX 2
 
 /* Pipe used for capturing signal occurence */
 int signal_pipe_fd[2] = { -1, -1 };
@@ -151,97 +155,306 @@ err_exit(const char *format, ...)
 	exit(EXIT_FAILURE);
 }
 
-/*!
- * Construct message in the proxy ctl rpc protocol format
- * Proxy control message format:
+/*
+ * Prepare byte stream in the proxy protocol format.
  *
- * | length  | Reserved| Data(Request/Response   |
- * | . . . . | . . . . | . . . . . . . . . . . . |
- * 0         4         8                         length
- *
- * \param json Json Payload
- * \param[out] len Length of the message
- *
- * \return Newly allocated string on sucess, NULL on failure
+ * \param fr \ref frame
+ * \param [out] total_size Total size of serialized byte stream
  */
-char*
-get_proxy_ctl_msg(const char *json, size_t *len) {
-	char   *proxy_ctl_msg = NULL;
-	size_t  json_len;
+uint8_t*
+serialize_frame(struct frame *fr, ssize_t *total_size)
+{
+	uint8_t *msg = NULL;
 
-	if (! (json && len)) {
+	if (! (fr && total_size)) {
 		return NULL;
 	}
 
-	json_len = strlen(json);
-	*len = json_len + PROXY_CTL_HEADER_SIZE;
-	proxy_ctl_msg = calloc(*len + 1, sizeof(char));
+	/* Header length is length of the header in number of 32 bit words.
+	 * Converting the header length to byte length.
+	 */
+	*total_size = (ssize_t)((fr->header.header_len * sizeof(uint32_t)) + fr->header.payload_len);
 
-	if (! proxy_ctl_msg) {
+	msg = calloc((size_t)(*total_size), sizeof(uint8_t));
+
+	if (! msg) {
 		abort();
 	}
 
-	set_big_endian_32((uint8_t*)proxy_ctl_msg + PROXY_CTL_HEADER_LENGTH_OFFSET, 
-				(uint32_t)(json_len));
-	strncpy(proxy_ctl_msg + PROXY_CTL_HEADER_SIZE, json, json_len);
+	set_big_endian_16(msg, PROXY_VERSION);
+	msg[HEADER_LEN_OFFSET] = fr->header.header_len;
+	msg[RES_OFFSET] =  fr->header.type;
+	msg[OPCODE_OFFSET] =  fr->header.opcode;
+	set_big_endian_32(msg + PAYLOAD_LEN_OFFSET, fr->header.payload_len);
 
-	return proxy_ctl_msg;
- }
+	if (fr->header.payload_len && fr->payload) {
+		strncpy((char *)msg + PAYLOAD_OFFSET, (const char*)fr->payload,
+				fr->header.payload_len);
+	}
+
+	return msg;
+}
 
 /*!
- * Send "hyper" payload to cc-proxy. This will be forwarded to hyperstart.
+ * Write frame to the proxy socket fd.
  *
- * \param fd File descriptor to send the message to(should be proxy ctl socket fd)
- * \param Hyperstart cmd id
- * \param json Json payload
+ * \param shim \ref cc_shim
+ * \param fr \ref frame
+ *
+ * \return true on success, false otherwise
  */
-void
-send_proxy_hyper_message(int fd, const char *hyper_cmd, const char *json) {
-	char      *proxy_payload = NULL;
-	char      *proxy_command_id = "hyper";
-	char      *proxy_ctl_msg = NULL;
-	size_t     len = 0, offset = 0;
+bool
+write_frame(struct cc_shim *shim, struct frame *fr)
+{
+	size_t     offset = 0;
 	ssize_t    ret;
+	ssize_t    total_size = 0;
 
-	/* cc-proxy has the following format for "hyper" payload:
-	 * {
-	 *    "id": "hyper",
-	 *    "data": {
-	 *        "hyperName": "ping",
-	 *        "data": "json payload",
-	 *    }
-	 * }
-	*/
-
-	if ( !json || fd < 0) {
-		return;
+	if (! (shim && fr)) {
+		return false;
 	}
 
+	uint8_t *msg = serialize_frame(fr, &total_size);
 
-	ret = asprintf(&proxy_payload,
-			"{\"id\":\"%s\",\"data\":{\"hyperName\":\"%s\",\"data\":%s}}",
-			proxy_command_id, hyper_cmd, json);
-
-	if (ret == -1) {
-		abort();
+	if (! msg ) {
+		return false;
 	}
 
-	proxy_ctl_msg = get_proxy_ctl_msg(proxy_payload, &len);
-	free(proxy_payload);
-
-	while (offset < len) {
-		ret = write(fd, proxy_ctl_msg + offset, len-offset);
+	while (offset < total_size) {
+		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
 		if (ret == EINTR) {
 			continue;
 		}
 		if (ret <= 0 ) {
-			free(proxy_ctl_msg);
+			free(msg);
 			shim_error("Error writing to proxy: %s\n", strerror(errno));
-			return;
+			return false;
 		}
 		offset += (size_t)ret;
 	}
-	free(proxy_ctl_msg);
+	free(msg);
+	return true;
+}
+
+/*!
+ * Send message to proxy.
+ *
+ * \param shim \ref cc_shim
+ * \param type Type of message
+ * \param opcode Opcode of message type
+ * \param payload Payload to be sent
+ * 
+ * \return true on success, false otherwise
+ */
+bool
+send_proxy_message(struct cc_shim *shim, uint8_t type, uint8_t opcode,
+			const char *payload)
+{
+	struct frame fr = { 0 };
+	bool ret;
+
+	if ( !shim || shim->proxy_sock_fd < 0) {
+		return false;
+	}
+
+	fr.header.version = PROXY_VERSION;
+	fr.header.header_len = MIN_HEADER_WORD_SIZE;
+	fr.header.type = type;
+	fr.header.opcode = opcode;
+
+	shim_debug("Sending frame of type:%d, opcode:%d, payload:%s\n",
+			fr.header.type,
+			fr.header.opcode,
+			payload? payload:"(empty)");
+
+	if (payload) {
+		fr.header.payload_len = (uint32_t)strlen(payload);
+		fr.payload = (uint8_t*)payload;
+	}
+
+	ret = write_frame(shim, &fr);
+	return ret;
+}
+
+/*!
+ * Send Connect command to proxy.
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false otherwise
+ */
+bool
+send_connect_command(struct cc_shim *shim)
+{
+	char *payload = NULL;
+	bool ret;
+
+	if (! shim) {
+		return false;
+	}
+
+	if ((! shim->token) || (shim->proxy_sock_fd < 0)) {
+		return false;
+	}
+
+	if ( verify_base64url_format(shim->token) != 0) {
+		shim_error("Invalid token: %s, base64 encoded token expected\n",
+				shim->token);
+		return false;
+	}
+
+	// TODO: Verify the payload format
+	ret = asprintf(&payload,
+			"{\"token\":\"%s\"}", shim->token);
+
+	if (! payload) {
+		abort();
+	}
+
+	ret = send_proxy_message(shim, frametype_command, cmd_connectshim, payload);
+	if (! ret) {
+		shim_error("Could not send initial connect command to "
+				"proxy at %s\n", shim->proxy_address);
+	}
+
+	free(payload);
+	return ret;
+}
+
+/*!
+ * Read message received from proxy.
+ *
+ * \param fd File descriptor to read the data from.
+ * \param buf Buffer to store the data in.
+ * \param size Size in bytes to be read.
+ *
+ * \return true on success, false otherwise
+ */
+bool read_wire_data(int fd, uint8_t *buf, ssize_t size)
+{
+	ssize_t ret;
+	ssize_t offset = 0;
+
+	if ( fd < 0 || ! buf ) {
+		return false;
+	}
+
+	do {
+		ret = recv(fd, buf, (size_t)(size-offset), 0);
+		if (ret == 0) {
+			shim_error("Received EOF on file descriptor\n");
+			// TODO: Exit for now, add logic to try to reconnect
+			// to proxy.
+			exit(EXIT_FAILURE);
+		} else if (ret < 0) {
+			shim_error("Failed to read from fd: %s\n",
+				strerror(errno));
+			return false;
+		}
+		if (ret >= size) {
+			break;
+		}
+		offset += ret;
+	} while(1);
+
+	return true;
+}
+
+/*!
+ * Read message received from proxy.
+ *
+ * \param shim \ref cc_shim
+ * \param header \ref frame
+ *
+ * \return newly allocated frame on success, NULL otherwise
+ */
+struct frame* 
+read_frame(struct cc_shim *shim)
+{
+	uint8_t *buf = NULL;
+	size_t  size = VERSION_SIZE + HEADER_LEN_SIZE;
+	size_t header_size_in_bytes;
+	struct frame *fr = NULL;
+
+	if ( !shim || shim->proxy_sock_fd < 0) {
+		return false;
+	}
+
+	buf  = calloc(size, sizeof(uint8_t));
+	if ( !buf) {
+		abort();
+	}
+
+	fr = calloc(1, sizeof(struct frame));
+	if ( !fr) {
+		abort();
+	}
+
+	if (! read_wire_data(shim->proxy_sock_fd, buf, size)) {
+		goto error;
+	}
+
+	fr->header.header_len = buf[HEADER_LEN_OFFSET];
+	fr->header.version = get_big_endian_16(buf);
+
+	if (fr->header.version != PROXY_VERSION) {
+		shim_error("Bad frame version: %d, Expected : %d\n", 
+				fr->header.version,
+				PROXY_VERSION);
+		goto error;
+	}
+
+	/* Get the header size in bytes, as the proxy passes the header length
+	 * as 32 bit word length.
+	 */
+	header_size_in_bytes = (size_t)fr->header.header_len * sizeof(uint32_t);
+
+	buf = realloc(buf, header_size_in_bytes);
+	if (! buf) {
+		abort();
+	}
+
+	if (! read_wire_data(shim->proxy_sock_fd, buf + size,
+			(ssize_t)(header_size_in_bytes) - (ssize_t)size)) {
+		shim_error("Error while reading frame from proxy at %s\n",
+				shim->proxy_address);
+		goto error;
+	}
+
+	fr->header.payload_len = get_big_endian_32(buf + PAYLOAD_LEN_OFFSET);
+	fr->header.type = buf[RES_OFFSET] & 0x0F;
+	fr->header.err = buf[RES_OFFSET] & 0x10 ;
+	fr->header.opcode = buf[OPCODE_OFFSET];
+
+	if (fr->header.payload_len) {
+		buf = realloc(buf, fr->header.payload_len + 1);
+		if (! buf) {
+			abort();
+		}
+
+		memset(buf, 0, fr->header.payload_len + 1);
+		if (! read_wire_data(shim->proxy_sock_fd, buf, 
+				fr->header.payload_len)) {
+			goto error;
+		}
+		fr->payload = buf;
+	} else {
+		free(buf);
+	}
+
+	shim_debug("Frame read - HeaderLength: %d, Version: %d, "
+			"Payloadlen: %d, Type:%d, "
+			"Opcode: %d, Err:%d\n",
+			fr->header.header_len, fr->header.version,
+			fr->header.payload_len, fr->header.type,
+			fr->header.opcode, fr->header.err);
+
+	return fr;
+
+error:
+	free(buf);
+	free(fr);
+	return NULL;
 }
 
 /*!
@@ -253,49 +466,56 @@ send_proxy_hyper_message(int fd, const char *hyper_cmd, const char *json) {
 void
 handle_signals(struct cc_shim *shim) {
 	int                sig;
-	char              *buf;
 	int                ret;
-	char              *cmd = NULL;
 	struct winsize     ws;
-	static char*       cmds[] = { "winsize", "killcontainer"};
+	char              *payload = NULL;
 
-	if ( !(shim && shim->container_id) || shim->proxy_sock_fd < 0) {
+	if ( !shim  || shim->proxy_sock_fd < 0) {
 		return;
 	}
 
 	while (read(signal_pipe_fd[0], &sig, sizeof(sig)) != -1) {
-		shim_debug("Handling signal : %d on fd %d\n", sig, signal_pipe_fd[0]);
+		shim_debug("Handling signal : %d on fd %d\n", sig,
+				signal_pipe_fd[0]);
 		if (sig == SIGWINCH ) {
-			cmd = cmds[0];
 			if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == -1) {
-				shim_warning("Error getting the current window size: %s\n",
+				shim_warning("Error getting the current"\
+					"window size: %s\n",
 					strerror(errno));
 				continue;
 			}
-			ret = asprintf(&buf, "{\"seq\":%"PRIu64", \"row\":%d, \"column\":%d}",
-					shim->io_seq_no, ws.ws_row, ws.ws_col);
-			shim_debug("handled SIGWINCH for container %s (row=%d, column=%d)\n",
-				shim->container_id, ws.ws_row, ws.ws_col);
+			ret = asprintf(&payload, "{\"signal\": %d,"\
+					" \"row\":%d, \"column\":%d}",
+					 sig, ws.ws_row, ws.ws_col);
+
+			shim_debug("handled SIGWINCH for container %s "
+				"(row=%d, column=%d)\n",
+				shim->container_id? shim->container_id: "",
+				ws.ws_row, ws.ws_col);
 
 		} else {
-			cmd = cmds[1];
-			ret = asprintf(&buf, "{\"container\":\"%s\", \"signal\":%d}",
-                                                        shim->container_id, sig);
-			shim_debug("Killed container %s with signal %d\n", shim->container_id, sig);
+			ret = asprintf(&payload, "{\"signal\":%d}",
+                                                         sig);
+			shim_debug("Killed container %s with signal %d\n", 
+				shim->container_id? shim->container_id: "",
+				sig);
 		}
 		if (ret == -1) {
 			abort();
 		}
 
-		send_proxy_hyper_message(shim->proxy_sock_fd, cmd, buf);
-		free(buf);
+		if (! send_proxy_message(shim, frametype_command,
+					cmd_signal, payload)) {
+			shim_error("Could not send signal command "
+					"to proxy %s\n", shim->proxy_address);
+		}
+
+		free(payload);
         }
 }
 
 /*!
- * Read data from stdin(with tty set in raw mode)
- * and send it to proxy I/O channel
- * Reference : https://github.com/hyperhq/runv/blob/master/hypervisor/tty.go#L448
+ * Read data from stdin and send it to proxy.
  *
  * \param shim \ref cc_shim
  */
@@ -303,15 +523,13 @@ void
 handle_stdin(struct cc_shim *shim)
 {
 	ssize_t        nread;
-	int            ret;
-	ssize_t        len;
-	static uint8_t buf[BUFSIZ+STREAM_HEADER_SIZE];
+	char           buf[BUFSIZ] = { 0 };
 
-	if (! shim || shim->proxy_io_fd < 0) {
+	if (! shim || shim->proxy_sock_fd < 0) {
 		return;
 	}
 
-	nread = read(STDIN_FILENO , buf+STREAM_HEADER_SIZE, BUFSIZ);
+	nread = read(STDIN_FILENO , buf, BUFSIZ);
 	if (nread < 0) {
 		shim_warning("Error while reading stdin char :%s\n", strerror(errno));
 		return;
@@ -322,188 +540,175 @@ handle_stdin(struct cc_shim *shim)
 		poll_fds[STDIN_INDEX].fd = -1;
 	}
 
-	len = nread + STREAM_HEADER_SIZE;
-	set_big_endian_64 (buf, shim->io_seq_no);
-	set_big_endian_32 (buf + STREAM_HEADER_LENGTH_OFFSET, (uint32_t)len);
-
-	// TODO: handle write in the poll loop to account for write blocking
-	ret = (int)write(shim->proxy_io_fd, buf, (size_t)len);
-	if (ret == -1) {
-		shim_warning("Error writing from fd %d to fd %d: %s\n",
-			     STDIN_FILENO, shim->proxy_io_fd, strerror(errno));
-		return;
+	if (! send_proxy_message(shim, frametype_stream, stream_stdin, buf)) {
+		shim_error("Could not send stdin stream to proxy at %s\n",
+				shim->proxy_address);
 	}
 }
 
 /*!
- * Read and parse I/O message on proxy I/O fd
- *
- * \param shim \ref cc_shim
- * \param[out] seq Seqence number of the I/O stream
- * \param[out] stream_len Length of the data received
- *
- * \return newly allocated string on success, else \c NULL.
- */
-char*
-read_IO_message(struct cc_shim *shim, uint64_t *seq, ssize_t *stream_len) {
-	char *buf = NULL;
-	ssize_t need_read = STREAM_HEADER_SIZE;
-	ssize_t bytes_read = 0, want, ret;
-	ssize_t max_bytes = HYPERSTART_MAX_RECV_BYTES;
-
-	if (! (shim && seq && stream_len)) {
-		return NULL;
-	}
-
-	*stream_len = 0;
-
-	buf = calloc(STREAM_HEADER_SIZE, 1);
-	if (! buf ) {
-		abort();
-	}
-
-	while (bytes_read < need_read) {
-		want = need_read - bytes_read;
-		if (want > BUFSIZ)  {
-			want = BUFSIZ;
-		}
-
-		ret = read(shim->proxy_io_fd, buf+bytes_read, (size_t)want);
-		if (ret == -1) {
-			free(buf);
-			err_exit("Error reading from proxy I/O fd: %s\n", strerror(errno));
-		} else if (ret == 0) {
-			/* EOF received on proxy I/O fd*/
-			free(buf);
-			err_exit("EOF received on proxy I/O fd\n");
-		}
-
-		bytes_read += ret;
-
-		if (*stream_len == 0 && bytes_read >= STREAM_HEADER_SIZE) {
-			*stream_len = get_big_endian_32((uint8_t*)(buf+STREAM_HEADER_LENGTH_OFFSET));
-
-			// length is 12 when hyperstart sends eof before sending exit code
-			if (*stream_len == STREAM_HEADER_SIZE) {
-				break;
-			}
-
-			/* Ensure amount of data is within expected bounds */
-			if (*stream_len > max_bytes) {
-				shim_warning("message too big (limit is %lu, but proxy returned %lu)",
-						(unsigned long int)max_bytes,
-						(unsigned long int)stream_len);
-				goto err;
-			}
-
-			if (*stream_len > STREAM_HEADER_SIZE) {
-				need_read = *stream_len;
-				buf = realloc(buf, (size_t)*stream_len);
-				if (! buf) {
-					abort();
-				}
-			}
-		}
-	}
-	*seq = get_big_endian_64((uint8_t*)buf);
-	return buf;
-
-err:
-	free(buf);
-	return NULL;
-}
-
-/*!
- * Handle output on the proxy I/O fd
+ * Handle response received from proxy
  *
  *\param shim \ref cc_shim
+ *\param fr \ref frame
  */
 void
-handle_proxy_output(struct cc_shim *shim)
+handle_proxy_response(struct cc_shim *shim, struct frame *fr)
 {
-	uint64_t  seq;
-	char     *buf = NULL;
-	int       outfd;
-	ssize_t   stream_len = 0;
-	ssize_t   ret;
-	ssize_t   offset;
-	int       code = 0;
-
-	if (shim == NULL) {
+	if (! (shim && shim->proxy_address)) {
 		return;
 	}
 
-	buf = read_IO_message(shim, &seq, &stream_len);
-	if ((! buf) || (stream_len <= 0) || (stream_len > HYPERSTART_MAX_RECV_BYTES)) {
-		/*TODO: is exiting here more appropriate, since this denotes
-		 * error communicating with proxy or proxy has exited
-		 */
-		goto out;
+	if ( !fr) {
+		return;
 	}
 
-	if (seq == shim->io_seq_no) {
+	// Reponses received from proxy are currently just logged.
+	if (fr->header.err) {
+		shim_error("Error response received from proxy at %s: %s\n", 
+				shim->proxy_address,
+				fr->payload ? (char*)fr->payload:"");
+
+		/* If we receive an error with the ConnectShim response,
+		 * the proxy could not validate the token.
+		 */
+		if (fr->header.opcode == cmd_connectshim) {
+			err_exit("Shim received an error in response"
+				"to ConnectShim command, exiting");
+		}
+	} else {
+		/* TODO: Currently logging response. Do we want to track responses
+		 * to requests in future. Maybe useful for restarting connection with proxy
+		 * and resending requests that were missed.
+		 */
+		shim_debug("Response received from proxy at %s: %s\n", 
+				shim->proxy_address,
+				fr->payload ? (char*)fr->payload:"");
+	}
+}
+
+/*!
+ * Handle stream received from proxy
+ *
+ *\param shim \ref cc_shim
+ *\param fr \ref frame
+ */
+void
+handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
+{
+	int outfd = -1;
+	ssize_t offset = 0;
+	size_t ret;
+
+	if (! (shim && shim->proxy_address)) {
+		return;
+	}
+
+	if ( fr->header.type != frametype_stream) {
+		return;
+	}
+
+	if (fr->header.opcode == stream_stdout) {
 		outfd = STDOUT_FILENO;
-	} else if (seq == shim->io_seq_no + 1) {//proxy allocates errseq 1 higher
+	} else if (fr->header.opcode == stream_stderr) {
 		outfd = STDERR_FILENO;
 	} else {
-		shim_warning("Seq no %"PRIu64 " received from proxy does not match with\
-				 shim seq %"PRIu64 "\n", seq, shim->io_seq_no);
-		goto out;
+		shim_warning("Invalid stream with opcode %d received from proxy at %s\n",
+				fr->header.opcode, shim->proxy_address);
+		return;
 	}
 
-	if (!shim->exiting && stream_len == STREAM_HEADER_SIZE) {
-		shim->exiting = true;
-		goto out;
-	} else if (shim->exiting && stream_len == (STREAM_HEADER_SIZE+1)) {
-		code = *(buf + STREAM_HEADER_SIZE); 	// hyperstart has sent the exit status
-		shim_debug("Exit status for container: %d\n", code);
-		free(buf);
-		restore_terminal();
-		exit(code);
-	}
-
-	/* TODO: what if writing to stdout/err blocks? Add this to the poll loop
-	 * to watch out for EPOLLOUT
-	 */
-	offset = STREAM_HEADER_SIZE;
-	while (offset < stream_len) {
-		ret = write(outfd, buf+offset, (size_t)(stream_len-offset));
+	while (offset < fr->header.payload_len) {
+		ret = write(outfd, fr->payload + offset,
+				 (size_t)(fr->header.payload_len - offset));
 		if (ret <= 0 ) {
-			goto out;
+			shim_error("Could not write stream to fd %d for proxy %s: %s\n",
+					outfd, shim->proxy_address, strerror(errno));
+			return;
 		}
 		offset += (ssize_t)ret;
 	}
+}
 
-out:
-	if (buf) {
-		free (buf);
+/*!
+ * Handle notification received from proxy
+ *
+ *\param shim \ref cc_shim
+ *\param fr \ref frame
+ */
+void
+handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
+{
+	int code = 0;
+
+	if (! (shim && shim->proxy_address)) {
+		return;
+	}
+
+	if ( ! ( fr && fr->payload)) {
+		return;
+	}
+
+	if (fr->header.opcode == notification_exitcode) {
+		/* Send disconnect command to proxy and exit
+		 * with the exit code
+		*/
+		code = *(fr->payload);
+
+		if (! send_proxy_message(shim, frametype_command,
+					cmd_disconnectshim, NULL)) {
+			shim_error("Could not send Disconnect shim command "
+				"to proxy at %s\n", shim->proxy_address);
+		}
+
+		shim_debug("Exit status for container: %d\n", code);
+		restore_terminal();
+		exit(code);
+	} else {
+		shim_warning("Unknown notification received from proxy %s: %d\n",
+				shim->proxy_address, fr->header.opcode);
 	}
 }
 
 /*!
- * Handle data on the proxy ctl socket fd
+ * Handle message received from proxy
  *
  *\param shim \ref cc_shim
  */
 void
-handle_proxy_ctl(struct cc_shim *shim)
+handle_proxy_message(struct cc_shim *shim)
 {
-	char buf[LINE_MAX] = { 0 };
-	ssize_t ret;
+	struct frame *fr;
 
-	if (! shim) {
+	fr = read_frame(shim);
+	if ( !fr) {
 		return;
 	}
 
-	ret = read(shim->proxy_sock_fd, buf, LINE_MAX-1);
-	if (ret == -1) {
-		err_exit("Error reading from the proxy ctl socket: %s\n", strerror(errno));
-	} else if (ret == 0) {
-		err_exit("EOF received on proxy ctl socket. Proxy has exited\n");
+	shim_debug("Received frame with type: %d, opcode: %d\n",
+			fr->header.type,
+			fr->header.opcode);
+
+	switch (fr->header.type) {
+		case frametype_response:
+			handle_proxy_response(shim, fr);
+			break;
+		case frametype_stream:
+			handle_proxy_stream(shim, fr);
+			break;
+		case frametype_notification:
+			handle_proxy_notification(shim, fr);
+			break;
+		case frametype_command:
+			shim_warning("Command received from proxy\n");
+			break;
+		default:
+			shim_warning("Unknown frame with type %d received\n",
+				fr->header.type);
 	}
 
-	//TODO: Parse the json and log error responses explicitly
-	shim_debug("Proxy response:%s\n", buf + PROXY_CTL_HEADER_SIZE);
+	free(fr->payload);
+	free(fr);
 }
 
 /*
@@ -528,18 +733,213 @@ parse_numeric_option(char *input) {
 	return num;
 }
 
+/*
+ * Parse proxy connection uri for connection address
+ * and port for tcp.
+ * Expected schemes are unix: and tcp:
+ *
+ * \param shim \ref cc_shim
+ * \param uri String containing the uri
+ *
+ * \return true on success, false on failure
+ */
+bool
+parse_connection_uri(struct cc_shim *shim, char *uri)
+{
+	const char *unix_uri = "unix://";
+	const char *tcp_uri = "tcp://";
+	size_t      unix_uri_len = strlen(unix_uri);
+	size_t      tcp_uri_len = strlen(tcp_uri);
+	bool        ret = false;
+	ssize_t     addr_len;
+
+	if (! (shim && uri)) {
+		return false;
+	}
+
+	if (! strncmp(uri, unix_uri, unix_uri_len)) {
+		shim->proxy_address = strdup(uri + unix_uri_len);
+
+		if ( !shim->proxy_address) {
+			abort();
+		}
+
+		if (strlen(shim->proxy_address) >= PATH_MAX ) {
+			shim_error("Path provided for the proxy exceeds"
+				"maximum allowed length on paths\n");
+			goto out;
+		}
+		ret = true;
+	} else if (! strncmp(uri, tcp_uri, tcp_uri_len)) {
+		char *port_offset = strstr(uri + tcp_uri_len, ":");
+
+		if ( !port_offset) {
+			shim_error("Missing port in uri %s\n", uri);
+			goto out;
+		}
+
+		shim->proxy_port = (int)parse_numeric_option(port_offset + 1);
+		if (shim->proxy_port == -1) {
+			shim_error("Could not parse port in uri %s: %s\n",
+					uri, strerror(errno));
+			goto out;
+		}
+
+		addr_len = port_offset - (uri + tcp_uri_len);
+
+		if (addr_len >= _POSIX_HOST_NAME_MAX) {
+			shim_error("Address provided for the proxy exceeds"
+				"maximum allowed length for hostname\n");
+			goto out;
+		}
+
+		if (addr_len == 0) {
+			shim_error("Missing tcp hostname in uri %s\n", uri);
+			goto out;
+		}
+
+		shim->proxy_address = calloc(sizeof(char),
+						(size_t)addr_len + 1);
+
+		if ( !shim->proxy_address) {
+			abort();
+		}
+
+		memcpy(shim->proxy_address, uri + tcp_uri_len,
+				(size_t)addr_len * sizeof(char));
+		ret = true;
+	} else {
+		shim_error("Invalid uri scheme : %s\n", uri);
+	}
+out:
+	free(uri);
+	return ret;
+}
+
+/*
+ * Establish tcp/unix connection with proxy.
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false on failure
+ */
+bool
+connect_to_proxy(struct cc_shim *shim)
+{
+	int   sockfd = -1;
+        char *port_str = NULL;
+	int   ret;
+
+	if (! shim) {
+		return false;
+	}
+
+	/* Uninitialised port means the uri provided is a
+	 * unix socket connection path
+	 */
+	if (shim->proxy_port == -1) {
+		struct sockaddr_un remote;
+		size_t path_size = sizeof(remote.sun_path);
+
+		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (sockfd == -1 ) {
+			shim_error("Error while creating socket: %s\n",
+					strerror(errno));
+			goto out;
+		}
+
+		remote.sun_family = AF_UNIX;
+		remote.sun_path[path_size-1] = '\0';
+		strncpy(remote.sun_path, shim->proxy_address,
+				path_size - 2);
+
+		if (connect(sockfd, (struct sockaddr *)&remote,
+				sizeof(struct sockaddr_un)) == -1) {
+			shim_error("Error while connecting to proxy "
+				"with address %s: %s\n", shim->proxy_address,
+				 strerror(errno));
+			goto out;
+		}
+	} else {
+		struct addrinfo    hints;
+		struct addrinfo   *servinfo, *addr;
+
+		/* Connect to proxy on tcp address+port
+		 */
+		memset(&hints, 0, sizeof hints);
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		/* Avoid service lookups as we provide a numeric port number.
+		 */
+		hints.ai_flags = AI_NUMERICSERV;
+
+		if ( asprintf(&port_str, "%d", shim->proxy_port) == -1) {
+			abort();
+		}
+
+		if ((ret = getaddrinfo(shim->proxy_address, port_str,
+				&hints, &servinfo)) != 0) {
+			shim_error("getaddrinfo error for %s:%d  :%s\n",
+				shim->proxy_address,
+				shim->proxy_port,
+				strerror(errno));
+			goto out;
+		}
+
+
+		// loop through all the results and connect to the first we can
+		for(addr = servinfo; addr != NULL; addr = addr->ai_next) {
+			if ((sockfd = socket(addr->ai_family, addr->ai_socktype,
+				addr->ai_protocol)) == -1) {
+				shim_debug("Error in socket creation for "
+					"%s:%d :%s\n",
+					shim->proxy_address,
+					shim->proxy_port,
+					strerror(errno));
+				continue;
+			}
+
+			if (connect(sockfd, addr->ai_addr, 
+						addr->ai_addrlen) == -1) {
+				close(sockfd);
+				shim_debug("Error in client connection for "
+					"%s:%d : %s\n", shim->proxy_address,
+					shim->proxy_port, strerror(errno));
+				continue;
+			}
+			break;
+		}
+
+		if (addr == NULL) {
+			shim_error("Failed to connect to proxy with address"
+				" %s:%d : %s\n", shim->proxy_address,
+				shim->proxy_port, strerror(errno));
+			goto out;
+		}
+	}
+
+	free(port_str);
+	shim->proxy_sock_fd = sockfd;
+	return true;
+out:
+	free(port_str);
+	if (sockfd >= 0) {
+		close(sockfd);
+	}
+
+	return false;
+}
+
 /*!
  * Print program usage
  */
 void
 print_usage(void) {
-	printf("%s: Usage\n", program_name);
+        printf("%s: Usage\n", program_name);
         printf("  -c,  --container-id   Container id\n");
-        printf("  -p,  --proxy-sock-fd  File descriptor of the socket connected to cc-proxy\n");
-        printf("  -o,  --proxy-io-fd    File descriptor of I/0 fd sent by the cc-proxy\n");
-        printf("  -s,  --seq-no         Sequence no for stdin and stdout\n");
-        printf("  -e,  --err-seq-no     Sequence no for stderr\n");
         printf("  -d,  --debug          Enable debug output\n");
+        printf("  -t,  --token          Connection token passed by cc-proxy\n");
+        printf("  -u,  --uri            Connection uri. Supported schemes are tcp: and unix:\n");
         printf("  -h,  --help           Display this help message\n");
 }
 
@@ -549,63 +949,43 @@ main(int argc, char **argv)
 	struct cc_shim shim = {
 		.container_id   =  NULL,
 		.proxy_sock_fd  = -1,
-		.proxy_io_fd    = -1,
-		.io_seq_no      =  0,
-		.err_seq_no     =  0,
-		.exiting        =  false,
+		.token          =  NULL,
+		.proxy_address  =  NULL,
+		.proxy_port     =  -1,
 	};
 	int                ret;
 	struct sigaction   sa;
 	int                c;
 	bool               debug = false;
-	long long          val;
+	char              *uri = NULL;
 
 	program_name = argv[0];
 
 	struct option prog_opts[] = {
 		{"container-id", required_argument, 0, 'c'},
-		{"proxy-sock-fd", required_argument, 0, 'p'},
-		{"proxy-io-fd", required_argument, 0, 'o'},
-		{"seq-no", required_argument, 0, 's'},
-		{"err-seq-no", required_argument, 0, 'e'},
 		{"debug", no_argument, 0, 'd'},
 		{"help", no_argument, 0, 'h'},
+		{"token", required_argument, 0, 't'},
+		{"uri", required_argument, 0, 'u'},
 		{ 0, 0, 0, 0},
 	};
 
-	while ((c = getopt_long(argc, argv, "c:p:o:s:e:dh", prog_opts, NULL))!= -1) {
+	while ((c = getopt_long(argc, argv, "c:dht:u:", prog_opts, NULL))!= -1) {
 		switch (c) {
 			case 'c':
 				shim.container_id = strdup(optarg);
 				break;
-			case 'p':
-				shim.proxy_sock_fd = (int)parse_numeric_option(optarg);
-				if (shim.proxy_sock_fd < 0) {
-					err_exit("Invalid value for proxy socket fd\n");
-				}
-				break;
-			case 'o':
-				shim.proxy_io_fd = (int)parse_numeric_option(optarg);
-				if (shim.proxy_io_fd < 0) {
-					err_exit("Invalid value for proxy IO fd\n");
-				}
-				break;
-			case 's':
-				val = parse_numeric_option(optarg);
-				if (val == -1) {
-					err_exit("Invalid value for I/O seqence no\n");
-				}
-				shim.io_seq_no = (uint64_t)val;
-				break;
-			case 'e':
-				val = parse_numeric_option(optarg);
-				if (val == -1) {
-					err_exit("Invalid value for error sequence no\n");
-				}
-				shim.err_seq_no = (uint64_t)val;
+			case 't':
+				shim.token = strdup(optarg);
 				break;
 			case 'd':
 				debug = true;
+				break;
+			case 'u':
+				uri = strdup(optarg);
+				if ( !uri) {
+					abort();
+				}
 				break;
 			case 'h':
 				print_usage();
@@ -616,35 +996,15 @@ main(int argc, char **argv)
 		}
 	}
 
-	if ( !shim.container_id) {
-		err_exit("Missing container id\n");
+	if ( !shim.token) {
+		err_exit("Missing connection token\n");
 	}
 
-	if ( shim.proxy_sock_fd == -1) {
-		err_exit("Missing proxy socket file descriptor\n");
-	}
-
-	if ( shim.proxy_io_fd == -1) {
-		err_exit("Missing proxy I/O file descriptor\n");
-	}
-
-	if (shim.io_seq_no == 0) {
-		err_exit("Missing I/O sequence number\n");
+	if (! uri) {
+		err_exit("Missing connection uri\n");
 	}
 
 	shim_log_init(debug);
-
-	ret = fcntl(shim.proxy_sock_fd, F_GETFD);
-	if (ret == -1) {
-		shim_error("Invalid proxy socket connection fd : %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	ret = fcntl(shim.proxy_io_fd, F_GETFD);
-	if (ret == -1) {
-		shim_error("Invalid proxy I/O fd : %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
 
 	/* Using self pipe trick to handle signals in the main loop, other strategy
 	 * would be to clock signals and use signalfd()/ to handle signals synchronously
@@ -671,9 +1031,23 @@ main(int argc, char **argv)
 		err_exit("sigaction");
 	}
 
-	add_pollfd(poll_fds, PROXY_IO_INDEX, shim.proxy_io_fd, POLLIN | POLLPRI);
+	if (! parse_connection_uri(&shim, uri)) {
+		goto out;
+	}
 
-	add_pollfd(poll_fds, PROXY_CTL_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
+	if (! connect_to_proxy(&shim)) {
+		goto out;
+	}
+
+	/* Send a Connect command to the proxy and wait for the response
+	 */
+	shim_debug("Sending initial connect command\n");
+	if (! send_connect_command(&shim)) {
+		shim_error("Could not send connect command to proxy\n");
+		goto out;
+	}
+
+	add_pollfd(poll_fds, PROXY_SOCK_INDEX, shim.proxy_sock_fd, POLLIN | POLLPRI);
 
 	/* Add stdin only if it is attached to a terminal.
 	 * If we add stdin in the non-interactive case, since stdin is closed by docker
@@ -719,14 +1093,9 @@ main(int argc, char **argv)
 			handle_signals(&shim);
 		}
 
-		//check proxy_io_fd
-		if (poll_fds[PROXY_IO_INDEX].revents != 0) {
-			handle_proxy_output(&shim);
-		}
-
 		// check for proxy sockfd
-		if (poll_fds[PROXY_CTL_INDEX].revents != 0) {
-			handle_proxy_ctl(&shim);
+		if (poll_fds[PROXY_SOCK_INDEX].revents != 0) {
+			handle_proxy_message(&shim);
 		}
 
 		// check stdin fd
@@ -735,6 +1104,12 @@ main(int argc, char **argv)
 		}
 	}
 
+out:
 	free(shim.container_id);
-	return 0;
+	free(shim.proxy_address);
+	free(shim.token);
+	if (shim.proxy_sock_fd >= 0) {
+		close (shim.proxy_sock_fd);
+	}
+	return EXIT_FAILURE;
 }

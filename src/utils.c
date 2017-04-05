@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h>
+#include <regex.h>
 
 #include "log.h"
 #include "utils.h"
@@ -94,6 +96,96 @@ set_fd_nonblocking(int fd)
 		return false;
 	}
 	return true;
+}
+
+/*
+ * Verify string is in base64url encoding format
+ *
+ *\param s string to verify
+ *
+ *\return 0 on success, -1 on failure
+ */
+int
+verify_base64url_format(char *s)
+{
+	regex_t pattern;
+	int ret = -1;
+	char *regex = NULL;
+	char errbuf[256];
+
+	/* Alphabet set for base64 url encoding.
+	 * See : https://tools.ietf.org/html/rfc4648#page-8
+	 */
+	const char *alph_set = "[a-zA-Z0-9_\\-]";
+
+	if (!s)	{
+		return -1;
+	}
+
+	/* base64 encoded string consists of 4 letter blocks from base64
+	 * alphabet set, and may end with a 3 letter block followed by "=" for
+	 * padding or a 2 letter block followed by "==" for padding.
+	 *
+	 * See: https://tools.ietf.org/html/rfc4648#section-4
+	 */
+	ret = asprintf(&regex, "^(%1$s{4})*(%1$s{4}|%1$s{3}=|%1$s{2}==)$",
+				alph_set);
+
+	if ( !regex) {
+		abort();
+	}
+
+	ret = regcomp(&pattern, regex, REG_EXTENDED);
+	if ( ret == -1) {
+		shim_error("Could not compile base64url encoding regular"
+			"expression: %s\n", strerror(errno));
+		goto out;
+	}
+
+	ret = regexec(&pattern, s, 0, NULL, 0);
+	if (ret != 0) {
+		regerror(ret, &pattern, errbuf, sizeof(errbuf));
+		shim_error("Could not verify string for base64url "
+			"encoding: %s\n", errbuf);
+		ret = -1;
+	}
+
+out:
+	free(regex);
+	regfree(&pattern);
+	return ret;
+}
+
+/*!
+ * Store short integer as big endian in buffer
+ *
+ * \param buf Buffer to store the value in
+ * \param val Short Integer to be converted to big endian
+ */
+void
+set_big_endian_16(uint8_t *buf, uint16_t val)
+{
+	if (! buf) {
+		return;
+	}
+	buf[0] = (uint8_t)(val >> 8);
+	buf[1] = (uint8_t)val;
+}
+
+/*!
+ * Convert the value stored in buffer to little endian
+ *
+ * \param buf Buffer storing the big endian value
+ *
+ * \return Unsigned 16 bit network ordered integer
+ */
+uint16_t
+get_big_endian_16(const uint8_t *buf)
+{
+	if (! buf) {
+		return 0;
+	}
+	return (uint16_t)(buf[0] << 8 | buf[1] );
 }
 
 /*!
