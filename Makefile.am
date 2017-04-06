@@ -21,7 +21,7 @@ AM_CFLAGS = -std=gnu99 -fstack-protector -Wall -pedantic \
 	-Wconversion -Wunreachable-code \
 	-fPIE
 
-AM_LDFLAGS = -pie
+AM_LDFLAGS = -pie -z noexecstack -z relro -z now
 
 libexec_PROGRAMS = cc-shim
 
