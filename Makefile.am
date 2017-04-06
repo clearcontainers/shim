@@ -23,6 +23,8 @@ AM_CFLAGS = -std=gnu99 -fstack-protector -Wall -pedantic \
 
 AM_LDFLAGS = -pie -z noexecstack -z relro -z now
 
+AM_CPPFLAGS = -D_FORTIFY_SOURCE=2
+
 libexec_PROGRAMS = cc-shim
 
 cc_shim_CFLAGS = \
