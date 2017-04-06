@@ -32,3 +32,25 @@ cc_shim_SOURCES = \
 	src/utils.h \
 	src/log.c \
 	src/log.h
+
+check : $(CHECK_DEPS)
+
+CHECK_DEPS = check-shim
+
+check-shim:
+	$(AM_V_GEN)shim_test_common_args="-v -timeout 5s  $(srcdir)/tests -shimpath $(abs_builddir)/cc-shim" ; \
+	go test -race $$shim_test_common_args || go test $$shim_test_common_args
+
+if CPPCHECK
+CHECK_DEPS += cppcheck
+cppcheck:
+	@$(CPPCHECK_PATH) --enable=performance,unusedFunction,missingInclude \
+		--language=c --std=c99 --std=posix \
+		--error-exitcode=1 -I$(srcdir)/src $(srcdir)/src
+endif
+
+EXTRA_DIST= \
+	.ci \
+	vendor \
+	CONTRIBUTING.md \
+	README.md

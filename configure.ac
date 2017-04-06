@@ -44,4 +44,21 @@ AC_TYPE_SIZE_T
 AC_FUNC_FORK
 AC_CHECK_FUNCS([atexit dup2 memset strdup])
 
+AC_CHECK_PROG(GO,[go],[yes],[no])
+
+AC_ARG_ENABLE(cppcheck, AS_HELP_STRING([--enable-cppcheck], [enable static analysis @<:@default=no@:>@]),
+          [], [enable_cppcheck=no])
+AS_IF([test x"$enable_cppcheck" = "xyes"],
+    [AC_SUBST([CPPCHECK], [1])],
+    [AC_SUBST([CPPCHECK], [0])])
+AM_CONDITIONAL([CPPCHECK], [test x$enable_cppcheck = x"yes"])
+
+AS_IF([test $CPPCHECK = 1],
+   [AC_PATH_PROG([CPPCHECK_PATH], [cppcheck], [no], [$PATH:/sbin:/usr/sbin])
+   if test x"$CPPCHECK_PATH" == x"no" ; then
+       AC_MSG_ERROR([Please install cppcheck.])
+   fi
+   AC_SUBST(CPPCHECK_PATH)]
+)
+
 AC_OUTPUT
