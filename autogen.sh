@@ -23,7 +23,7 @@ set -e
 autoreconf --force --install --symlink --warnings=all
 
 args="\
---prefix=/usr"
+--prefix=/usr --libexecdir=/usr/libexec/clear-containers"
 
 set -x
 ./configure $args "$@"
