@@ -529,7 +529,7 @@ handle_stdin(struct cc_shim *shim)
 		return;
 	}
 
-	nread = read(STDIN_FILENO , buf, BUFSIZ);
+	nread = read(STDIN_FILENO , buf, BUFSIZ-1);
 	if (nread < 0) {
 		shim_warning("Error while reading stdin char :%s\n", strerror(errno));
 		return;
