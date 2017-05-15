@@ -222,7 +222,7 @@ write_frame(struct cc_shim *shim, struct frame *fr)
 
 	while (offset < total_size) {
 		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
-		if (ret == EINTR) {
+		if (ret == -1 && errno == EINTR) {
 			continue;
 		}
 		if (ret <= 0 ) {
@@ -496,9 +496,9 @@ handle_signals(struct cc_shim *shim) {
 		} else {
 			ret = asprintf(&payload, "{\"signal\":%d}",
                                                          sig);
-			shim_debug("Killed container %s with signal %d\n", 
-				shim->container_id? shim->container_id: "",
-				sig);
+			shim_debug("Sending signal %d to container %s\n",
+				sig,
+				shim->container_id? shim->container_id: "");
 		}
 		if (ret == -1) {
 			abort();
