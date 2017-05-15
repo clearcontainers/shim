@@ -19,7 +19,7 @@ addons:
       name: "clearcontainers/shim"
       description: "Build submitted via Travis CI"
     notification_email: archana.m.shinde@intel.com
-    build_command_prepend: "./configure; make clean"
+    build_command_prepend: "./autogen.sh; make clean"
     build_command:   "make -j 4"
     branch_pattern: coverity_scan
 
