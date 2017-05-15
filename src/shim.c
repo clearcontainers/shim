@@ -496,9 +496,9 @@ handle_signals(struct cc_shim *shim) {
 		} else {
 			ret = asprintf(&payload, "{\"signal\":%d}",
                                                          sig);
-			shim_debug("Killed container %s with signal %d\n", 
-				shim->container_id? shim->container_id: "",
-				sig);
+			shim_debug("Sending signal %d to container %s\n",
+				sig,
+				shim->container_id? shim->container_id: "");
 		}
 		if (ret == -1) {
 			abort();
