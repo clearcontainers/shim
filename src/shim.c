@@ -222,7 +222,7 @@ write_frame(struct cc_shim *shim, struct frame *fr)
 
 	while (offset < total_size) {
 		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
-		if (ret == EINTR) {
+		if (ret == -1 && errno == EINTR) {
 			continue;
 		}
 		if (ret <= 0 ) {
