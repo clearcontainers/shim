@@ -248,7 +248,7 @@ write_frame(struct cc_shim *shim, struct frame *fr)
  */
 bool
 send_proxy_message(struct cc_shim *shim, uint8_t type, uint8_t opcode,
-			const char *payload)
+			const char *payload, size_t payload_len)
 {
 	struct frame fr = {{ 0 }};
 	bool ret;
@@ -268,7 +268,7 @@ send_proxy_message(struct cc_shim *shim, uint8_t type, uint8_t opcode,
 			payload? payload:"(empty)");
 
 	if (payload) {
-		fr.header.payload_len = (uint32_t)strlen(payload);
+		fr.header.payload_len = (uint32_t)payload_len;
 		fr.payload = (uint8_t*)payload;
 	}
 
@@ -311,7 +311,8 @@ send_connect_command(struct cc_shim *shim)
 		abort();
 	}
 
-	ret = send_proxy_message(shim, frametype_command, cmd_connectshim, payload);
+	ret = send_proxy_message(shim, frametype_command, cmd_connectshim,
+				payload, strlen(payload));
 	if (! ret) {
 		shim_error("Could not send initial connect command to "
 				"proxy at %s\n", shim->proxy_address);
@@ -505,7 +506,7 @@ handle_signals(struct cc_shim *shim) {
 		}
 
 		if (! send_proxy_message(shim, frametype_command,
-					cmd_signal, payload)) {
+					cmd_signal, payload, strlen(payload))) {
 			shim_error("Could not send signal command "
 					"to proxy %s\n", shim->proxy_address);
 		}
@@ -540,7 +541,8 @@ handle_stdin(struct cc_shim *shim)
 		poll_fds[STDIN_INDEX].fd = -1;
 	}
 
-	if (! send_proxy_message(shim, frametype_stream, stream_stdin, buf)) {
+	if (! send_proxy_message(shim, frametype_stream, stream_stdin,
+					buf, (size_t)nread)) {
 		shim_error("Could not send stdin stream to proxy at %s\n",
 				shim->proxy_address);
 	}
@@ -656,7 +658,7 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 		code = *(fr->payload);
 
 		if (! send_proxy_message(shim, frametype_command,
-					cmd_disconnectshim, NULL)) {
+					cmd_disconnectshim, NULL, 0)) {
 			shim_error("Could not send Disconnect shim command "
 				"to proxy at %s\n", shim->proxy_address);
 		}
