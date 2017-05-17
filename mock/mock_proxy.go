@@ -105,9 +105,9 @@ type ConnectShim struct {
 
 // ShimSignal is the struct used to represent the signal received from the shim
 type ShimSignal struct {
-	Signal int `json:"signal"`
-	Row    int `json:"row,omitempty"`
-	Column int `json:"column,omitempty"`
+	Signal int `json:"signalNumber"`
+	Row    int `json:"rows,omitempty"`
+	Column int `json:"columns,omitempty"`
 }
 
 func connectShimHandler(data []byte, userData interface{}, response *handlerResponse) {

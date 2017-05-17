@@ -485,17 +485,17 @@ handle_signals(struct cc_shim *shim) {
 					strerror(errno));
 				continue;
 			}
-			ret = asprintf(&payload, "{\"signal\": %d,"\
-					" \"row\":%d, \"column\":%d}",
+			ret = asprintf(&payload, "{\"signalNumber\": %d,"\
+					" \"rows\":%d, \"columns\":%d}",
 					 sig, ws.ws_row, ws.ws_col);
 
 			shim_debug("handled SIGWINCH for container %s "
-				"(row=%d, column=%d)\n",
+				"(rows=%d, columns=%d)\n",
 				shim->container_id? shim->container_id: "",
 				ws.ws_row, ws.ws_col);
 
 		} else {
-			ret = asprintf(&payload, "{\"signal\":%d}",
+			ret = asprintf(&payload, "{\"signalNumber\":%d}",
                                                          sig);
 			shim_debug("Sending signal %d to container %s\n",
 				sig,
