@@ -188,7 +188,7 @@ serialize_frame(struct frame *fr, ssize_t *total_size)
 	set_big_endian_32(msg + PAYLOAD_LEN_OFFSET, fr->header.payload_len);
 
 	if (fr->header.payload_len && fr->payload) {
-		strncpy((char *)msg + PAYLOAD_OFFSET, (const char*)fr->payload,
+		memcpy(msg + PAYLOAD_OFFSET, fr->payload,
 				fr->header.payload_len);
 	}
 
