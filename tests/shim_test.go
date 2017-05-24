@@ -253,6 +253,30 @@ func TestShimStdout(t *testing.T) {
 	t.Logf("Stdout buffer received from proxy: %s\n", s)
 }
 
+func TestShimStdoutWithNull(t *testing.T) {
+	rig := newTestRig(t)
+	rig.Start(validToken)
+	assert.NotNil(t, rig.proxy)
+
+	defer rig.Stop()
+
+	err := rig.checkShimRunning()
+	assert.Nil(rig.t, err)
+	<-rig.proxy.ShimConnected
+
+	payload := []byte("Stdout \x00 with null bytes")
+
+	rig.proxy.SendStdoutStream(payload)
+
+	buf := make([]byte, 512)
+	n, err := rig.shimStdout.Read(buf)
+	assert.Nil(t, err)
+	assert.Equal(rig.t, payload, buf[0:len(payload)])
+
+	s := string(buf[:n])
+	t.Logf("Stdout buffer received from proxy: %s\n", s)
+}
+
 func TestShimStderr(t *testing.T) {
 	rig := newTestRig(t)
 	rig.Start(validToken)
@@ -356,6 +380,30 @@ func TestShimSendingStdin(t *testing.T) {
 	assert.Nil(rig.t, stdinStream)
 
 	input := []byte("Test input for proxy")
+	n, err := rig.shimStdin.Write(input)
+	assert.Nil(rig.t, err)
+	assert.Equal(rig.t, n, len(input))
+
+	<-rig.proxy.StdinReceived
+	stdinStream = rig.proxy.GetLastStdinStream()
+	assert.Equal(rig.t, stdinStream, input)
+}
+
+func TestShimStdinWithNull(t *testing.T) {
+	rig := newTestRig(t)
+	rig.Start(validToken)
+	assert.NotNil(t, rig.proxy)
+
+	defer rig.Stop()
+
+	err := rig.checkShimRunning()
+	assert.Nil(rig.t, err)
+	<-rig.proxy.ShimConnected
+
+	stdinStream := rig.proxy.GetLastStdinStream()
+	assert.Nil(rig.t, stdinStream)
+
+	input := []byte("Input for proxy\x00 More input\x00 with null characters")
 	n, err := rig.shimStdin.Write(input)
 	assert.Nil(rig.t, err)
 	assert.Equal(rig.t, n, len(input))
