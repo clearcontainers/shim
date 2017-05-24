@@ -599,8 +599,8 @@ void
 handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 {
 	int outfd = -1;
-	ssize_t offset = 0;
-	size_t ret;
+	size_t offset = 0;
+	ssize_t ret;
 
 	if (! (shim && shim->proxy_address)) {
 		return;
@@ -622,13 +622,13 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 
 	while (offset < fr->header.payload_len) {
 		ret = write(outfd, fr->payload + offset,
-				 (size_t)(fr->header.payload_len - offset));
+				 (fr->header.payload_len - offset));
 		if (ret <= 0 ) {
 			shim_error("Could not write stream to fd %d for proxy %s: %s\n",
 					outfd, shim->proxy_address, strerror(errno));
 			return;
 		}
-		offset += (ssize_t)ret;
+		offset += (size_t)ret;
 	}
 }
 
