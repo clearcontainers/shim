@@ -341,7 +341,7 @@ bool read_wire_data(int fd, uint8_t *buf, ssize_t size)
 	}
 
 	do {
-		ret = recv(fd, buf, (size_t)(size-offset), 0);
+		ret = recv(fd, buf+offset, (size_t)(size-offset), 0);
 		if (ret == 0) {
 			shim_error("Received EOF on file descriptor\n");
 			// TODO: Exit for now, add logic to try to reconnect
