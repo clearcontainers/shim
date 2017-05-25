@@ -396,6 +396,13 @@ read_frame(struct cc_shim *shim)
 	}
 
 	fr->header.header_len = buf[HEADER_LEN_OFFSET];
+
+	if (fr->header.header_len < MIN_HEADER_WORD_SIZE) {
+		shim_error("Header length cannot be less than %d\n",
+			MIN_HEADER_WORD_SIZE);
+		goto error;
+	}
+
 	fr->header.version = get_big_endian_16(buf);
 
 	if (fr->header.version != PROXY_VERSION) {
