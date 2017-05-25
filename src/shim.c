@@ -331,17 +331,17 @@ send_connect_command(struct cc_shim *shim)
  *
  * \return true on success, false otherwise
  */
-bool read_wire_data(int fd, uint8_t *buf, ssize_t size)
+bool read_wire_data(int fd, uint8_t *buf, size_t size)
 {
 	ssize_t ret;
-	ssize_t offset = 0;
+	size_t offset = 0;
 
 	if ( fd < 0 || ! buf ) {
 		return false;
 	}
 
-	do {
-		ret = recv(fd, buf+offset, (size_t)(size-offset), 0);
+	while(offset < size) {
+		ret = recv(fd, buf+offset, size-offset, 0);
 		if (ret == 0) {
 			shim_error("Received EOF on file descriptor\n");
 			// TODO: Exit for now, add logic to try to reconnect
@@ -352,11 +352,8 @@ bool read_wire_data(int fd, uint8_t *buf, ssize_t size)
 				strerror(errno));
 			return false;
 		}
-		if (ret >= size) {
-			break;
-		}
-		offset += ret;
-	} while(1);
+		offset += (size_t)ret;
+	}
 
 	return true;
 }
@@ -391,7 +388,7 @@ read_frame(struct cc_shim *shim)
 		abort();
 	}
 
-	if (! read_wire_data(shim->proxy_sock_fd, buf, (ssize_t)size)) {
+	if (! read_wire_data(shim->proxy_sock_fd, buf, size)) {
 		goto error;
 	}
 
@@ -423,7 +420,7 @@ read_frame(struct cc_shim *shim)
 	}
 
 	if (! read_wire_data(shim->proxy_sock_fd, buf + size,
-			(ssize_t)(header_size_in_bytes) - (ssize_t)size)) {
+			header_size_in_bytes - size)) {
 		shim_error("Error while reading frame from proxy at %s\n",
 				shim->proxy_address);
 		goto error;
