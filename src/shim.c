@@ -54,6 +54,12 @@ struct pollfd poll_fds[MAX_POLL_FDS] = {{-1}};
 /* Pipe used for capturing signal occurence */
 int signal_pipe_fd[2] = { -1, -1 };
 
+/* Pipe used for monitoring of the parent process from the child */
+int monitor_pipe[2] = {-1, -1};
+
+/* Byte sent from parent to notify its child it terminated properly */
+const char end_byte = 'E';
+
 static char *program_name;
 
 struct termios *saved_term_settings;
@@ -131,6 +137,14 @@ void restore_terminal(void) {
 		free(saved_term_settings);
 		saved_term_settings = NULL;
 	}
+}
+
+void send_end_byte(void) {
+	if (write(monitor_pipe[1], &end_byte, sizeof(end_byte)) <= 0) {
+		shim_warning("Could not write end byte to the monitor pipe");
+	}
+
+	shim_debug("End byte properly written to the monitor pipe");
 }
 
 /*!
@@ -343,7 +357,7 @@ bool read_wire_data(int fd, uint8_t *buf, size_t size)
 	while(offset < size) {
 		ret = recv(fd, buf+offset, size-offset, 0);
 		if (ret == 0) {
-			shim_error("Received EOF on file descriptor\n");
+			shim_debug("Received EOF on file descriptor\n");
 			// TODO: Exit for now, add logic to try to reconnect
 			// to proxy.
 			exit(EXIT_FAILURE);
@@ -967,6 +981,7 @@ main(int argc, char **argv)
 	int                c;
 	bool               debug = false;
 	char              *uri = NULL;
+	int               pid = -1;
 
 	program_name = argv[0];
 
@@ -1090,6 +1105,55 @@ main(int argc, char **argv)
 		shim_debug("Could not register function for atexit");
 	}
 
+	/* create pipe to monitor parent from the child */
+	if (pipe(monitor_pipe) < 0) {
+		shim_error("Could not create shim monitor pipe: %s",
+			strerror (errno));
+		goto out;
+	}
+
+	ret = atexit(send_end_byte);
+	if (ret) {
+		shim_error("Could not register function send_end_byte()"
+			" for atexit");
+		goto out;
+	}
+
+	pid = fork ();
+	if (pid < 0) {
+		shim_error("Could not spawn the child: %s", strerror(errno));
+		goto out;
+	} else if (!pid) {
+		/* child */
+		close(monitor_pipe[1]);
+
+		/* block reading on monitor_pipe */
+		char buf;
+		ssize_t bytes = read(monitor_pipe[0], &buf, sizeof(end_byte));
+		if (bytes == 0) {
+			/* no bytes read means connection has been closed,
+			 * let's send SIGKILL to the process inside the VM
+			 */
+			shim_debug("Parent has terminated because of SIGKILL"
+				"/nForwarding the SIGKILL to the container"
+				" process");
+
+			signal_handler(SIGKILL);
+			handle_signals(&shim);
+
+			/* restore the terminal because atexit functions won't
+			 * be called after _exit()
+			 */
+			restore_terminal();
+		}
+
+		shim_debug("End of child");
+
+		/* exit immediately to prevent any atexit() call */
+		_exit(0);
+	}
+
+	/* parent */
 	while (1) {
 		ret = poll(poll_fds, MAX_POLL_FDS, -1);
 		if (ret == -1 && errno != EINTR) {
@@ -1114,6 +1178,8 @@ main(int argc, char **argv)
 	}
 
 out:
+	close(monitor_pipe[0]);
+	close(monitor_pipe[1]);
 	free(shim.container_id);
 	free(shim.proxy_address);
 	free(shim.token);
