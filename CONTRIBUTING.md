@@ -49,6 +49,8 @@ Beside the signed-off-by footer, we expect each patch to comply with the followi
        for some more good advice, and the Linux Kernel document:
            https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/tree/Documentation/SubmittingPatches
 
+       Fixes: #nnn
+
        Signed-off-by: <contributor@foo.com>
 ```
 
@@ -59,6 +61,8 @@ For example:
     
         Change the add_pollfd function to add file descriptors at
         predefined index for maintainability.
+
+        Fixes: #123
     
         Signed-off-by: Archana Shinde <archana.m.shinde@intel.com>
 
@@ -122,8 +126,8 @@ visibility on the problem and work toward resolution.
 
 ## Closing issues
 
-You can either close issues manually by adding the fixing commit SHA1 to the issue
-comments or by adding the `Fixes` keyword to your commit message:
+The preferred way to close issues is by adding the `Fixes` keyword to your commit message.
+If your PR contains multiple commits then only one `Fixes` is required to be present the series, but multiple may be present if necessary.
 
 ```
 Fix handling of semvers with only a single pre-release field
