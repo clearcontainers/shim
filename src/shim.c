@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <netdb.h>
 
+#include "config.h"
 #include "utils.h"
 #include "log.h"
 #include "shim.h"
@@ -953,6 +954,14 @@ out:
 	return false;
 }
 
+/*
+ * Print version information.
+ */
+void
+show_version(void) {
+	printf("%s version: %s (commit: %s)\n", PACKAGE_NAME, PACKAGE_VERSION, GIT_COMMIT);
+}
+
 /*!
  * Print program usage
  */
@@ -963,6 +972,7 @@ print_usage(void) {
         printf("  -d,  --debug          Enable debug output\n");
         printf("  -t,  --token          Connection token passed by cc-proxy\n");
         printf("  -u,  --uri            Connection uri. Supported schemes are tcp: and unix:\n");
+        printf("  -v,  --version        Show version\n");
         printf("  -h,  --help           Display this help message\n");
 }
 
@@ -991,10 +1001,11 @@ main(int argc, char **argv)
 		{"help", no_argument, 0, 'h'},
 		{"token", required_argument, 0, 't'},
 		{"uri", required_argument, 0, 'u'},
+		{"version", no_argument, 0, 'v'},
 		{ 0, 0, 0, 0},
 	};
 
-	while ((c = getopt_long(argc, argv, "c:dht:u:", prog_opts, NULL))!= -1) {
+	while ((c = getopt_long(argc, argv, "c:dht:u:v", prog_opts, NULL))!= -1) {
 		switch (c) {
 			case 'c':
 				shim.container_id = strdup(optarg);
@@ -1011,6 +1022,9 @@ main(int argc, char **argv)
 					abort();
 				}
 				break;
+			case 'v':
+				show_version();
+				exit(EXIT_SUCCESS);
 			case 'h':
 				print_usage();
 				exit(EXIT_SUCCESS);

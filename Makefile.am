@@ -14,6 +14,27 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
+# Has a value if building in a git tree
+GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+
+# Has a value if building in a git-archive(1)-generated tree
+# (see .gitattributes).
+GENERATED_COMMIT = $(shell cat commit_id.fmt 2>/dev/null \| grep \'^[a-f0-9][a-f0-9]*\$\')
+
+commit_id:
+	$(AM_V_GEN)if [ "x$(GIT_COMMIT)" != "x" ]; then \
+		echo "Determining commit id from git"; \
+		echo "$(GIT_COMMIT)" > commit_id; \
+	elif [ "x$(GENERATED_COMMIT)" != "x" ]; then \
+		echo "Determining commit id from generated value"; \
+		echo "$(GENERATED_COMMIT)" > commit_id; \
+	else \
+		echo "WARNING: cannot determine actual commit id"; \
+		echo "0" > commit_id; \
+	fi
+
+STORED_COMMIT = $(shell cat $(builddir)/commit_id 2>/dev/null || cat $(srcdir)/commit_id 2>/dev/null)
+
 AM_CFLAGS = -std=gnu99 -fstack-protector -Wall -pedantic \
 	-Wstrict-prototypes -Wundef -fno-common \
 	-Werror-implicit-function-declaration \
@@ -23,7 +44,8 @@ AM_CFLAGS = -std=gnu99 -fstack-protector -Wall -pedantic \
 
 AM_LDFLAGS = -pie -z noexecstack -z relro -z now
 
-AM_CPPFLAGS = -D_FORTIFY_SOURCE=2
+AM_CPPFLAGS = -D_FORTIFY_SOURCE=2 \
+		-DGIT_COMMIT=\"$(STORED_COMMIT)\"
 
 libexec_PROGRAMS = cc-shim
 
@@ -37,6 +59,12 @@ cc_shim_SOURCES = \
 	src/utils.h \
 	src/log.c \
 	src/log.h
+
+src/cc_shim-shim.$(OBJEXT): \
+         commit_id
+
+clean-local:
+	rm -f commit_id
 
 check : $(CHECK_DEPS)
 
@@ -56,6 +84,7 @@ endif
 
 EXTRA_DIST= \
 	.ci \
+	commit_id \
 	vendor \
 	CONTRIBUTING.md \
 	README.md
