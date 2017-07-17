@@ -28,6 +28,22 @@ go get "$test_repo"
 
 test_repo_dir="${GOPATH}/src/${test_repo}"
 
+if [ "$TRAVIS" = true ]
+then
+    # Check the commits in the branch
+    (cd "${test_repo_dir}" && make checkcommits)
+    checkcommits \
+        --need-fixes \
+        --need-sign-offs \
+        --body-length 72 \
+        --subject-length 75 \
+        --verbose
+
+    # Travis doesn't provide a VT-x environment, so nothing more to do
+    # here.
+    exit 0
+fi
+
 # Setup environment and build components.
 cd "${test_repo_dir}"
 sudo -E PATH=$PATH bash .ci/setup.sh
