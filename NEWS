@@ -1,3 +1,7 @@
+3.0.0-alpha.4
+    Support for version
+    Enable checkcommits
+
 3.0.0-alpha.3
     Detect SIGKILL
 
