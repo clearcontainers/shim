@@ -61,4 +61,10 @@ AS_IF([test $CPPCHECK = 1],
    AC_SUBST(CPPCHECK_PATH)]
 )
 
+AC_ARG_WITH([timeout], [AS_HELP_STRING([--with-timeout],
+            [reconnection timeout to proxy in seconds])])
+AS_IF([test x"$with_timeout" != "x"],
+      [AC_DEFINE_UNQUOTED([RECONNECT_TIMEOUT_S], [$with_timeout],
+                          [reconnection timeout to proxy in seconds])])
+
 AC_OUTPUT

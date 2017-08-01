@@ -37,11 +37,22 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <time.h>
 
 #include "config.h"
 #include "utils.h"
 #include "log.h"
 #include "shim.h"
+
+// How many seconds shim tries to reconnect to proxy before it exits
+#ifndef RECONNECT_TIMEOUT_S
+#define RECONNECT_TIMEOUT_S 10
+#endif
+
+// Period between attempts to reconnect to proxy in milliseconds
+#ifndef RECONNECT_POLL_MS
+#define RECONNECT_POLL_MS 100
+#endif
 
 /* globals */
 
@@ -312,6 +323,7 @@ send_connect_command(struct cc_shim *shim)
 		return false;
 	}
 
+	shim_debug("Sending connect command\n");
 	if ( verify_base64url_format(shim->token) != 0) {
 		shim_error("Invalid token: %s, base64 encoded token expected\n",
 				shim->token);
@@ -337,31 +349,34 @@ send_connect_command(struct cc_shim *shim)
 	return ret;
 }
 
+bool reconnect_to_proxy(struct cc_shim *shim);
+
 /*!
  * Read message received from proxy.
  *
- * \param fd File descriptor to read the data from.
+ * \param shim \ref cc_shim
  * \param buf Buffer to store the data in.
  * \param size Size in bytes to be read.
  *
  * \return true on success, false otherwise
  */
-bool read_wire_data(int fd, uint8_t *buf, size_t size)
+bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
 {
 	ssize_t ret;
 	size_t offset = 0;
 
-	if ( fd < 0 || ! buf ) {
+	if ( shim->proxy_sock_fd < 0 || ! buf ) {
 		return false;
 	}
 
 	while(offset < size) {
-		ret = recv(fd, buf+offset, size-offset, 0);
+		ret = recv(shim->proxy_sock_fd, buf+offset, size-offset, 0);
 		if (ret == 0) {
 			shim_debug("Received EOF on file descriptor\n");
-			// TODO: Exit for now, add logic to try to reconnect
-			// to proxy.
-			exit(EXIT_FAILURE);
+			if (! reconnect_to_proxy(shim)) {
+				exit(EXIT_FAILURE);
+			}
+			return false;
 		} else if (ret < 0) {
 			shim_error("Failed to read from fd: %s\n",
 				strerror(errno));
@@ -403,7 +418,7 @@ read_frame(struct cc_shim *shim)
 		abort();
 	}
 
-	if (! read_wire_data(shim->proxy_sock_fd, buf, size)) {
+	if (! read_wire_data(shim, buf, size)) {
 		goto error;
 	}
 
@@ -434,8 +449,7 @@ read_frame(struct cc_shim *shim)
 		abort();
 	}
 
-	if (! read_wire_data(shim->proxy_sock_fd, buf + size,
-			header_size_in_bytes - size)) {
+	if (! read_wire_data(shim, buf + size, header_size_in_bytes - size)) {
 		shim_error("Error while reading frame from proxy at %s\n",
 				shim->proxy_address);
 		goto error;
@@ -453,8 +467,7 @@ read_frame(struct cc_shim *shim)
 		}
 
 		memset(buf, 0, fr->header.payload_len + 1);
-		if (! read_wire_data(shim->proxy_sock_fd, buf, 
-				fr->header.payload_len)) {
+		if (! read_wire_data(shim, buf, fr->header.payload_len)) {
 			goto error;
 		}
 		fr->payload = buf;
@@ -845,7 +858,7 @@ out:
  * \return true on success, false on failure
  */
 bool
-connect_to_proxy(struct cc_shim *shim)
+establish_connection_to_proxy(struct cc_shim *shim)
 {
 	int   sockfd = -1;
         char *port_str = NULL;
@@ -876,7 +889,7 @@ connect_to_proxy(struct cc_shim *shim)
 
 		if (connect(sockfd, (struct sockaddr *)&remote,
 				sizeof(struct sockaddr_un)) == -1) {
-			shim_error("Error while connecting to proxy "
+			shim_warning("Error while connecting to proxy "
 				"with address %s: %s\n", shim->proxy_address,
 				 strerror(errno));
 			goto out;
@@ -954,6 +967,71 @@ out:
 	return false;
 }
 
+/*!
+ * Establish tcp/unix connection with proxy and sends a Connect command to it
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false on failure
+ */
+bool connect_to_proxy(struct cc_shim *shim)
+{
+	if (! establish_connection_to_proxy(shim)) {
+		return false;
+	}
+
+	/* Send a Connect command to the proxy and wait for the response
+	 */
+	if (! send_connect_command(shim)) {
+		shim_error("Could not send connect command to "
+				PROXY "\n");
+		return false;
+	}
+	return true;
+}
+
+inline void sleep_ms(int ms)
+{
+	struct timespec ts = { 0, ms * 1000000L };
+	nanosleep(&ts, NULL);
+}
+
+/*!
+ * Try to re-establish tcp/unix connection with proxy in shim->timeout seconds.
+ *
+ * \param shim \ref cc_shim
+ *
+ * \return true on success, false on failure
+ */
+bool reconnect_to_proxy(struct cc_shim *shim)
+{
+	shim_warning("Reconnecting to " PROXY " (timeout %d s)\n",
+			shim->timeout);
+	int time = 0;
+	while (1) {
+		sleep_ms(RECONNECT_POLL_MS);
+		time += RECONNECT_POLL_MS;
+		if (time >= shim->timeout * 1000) {
+			shim_error("Failed to reconnect to " PROXY
+					" (timeout %d s)\n", shim->timeout);
+			return false;
+		}
+
+		close(shim->proxy_sock_fd);
+		if (! connect_to_proxy(shim)) {
+			continue;
+		}
+
+		break;
+	}
+
+	// Update poll_fds because connect_to_proxy(shim) might have updated
+	// shim->proxy_sock_fd
+	add_pollfd(poll_fds, PROXY_SOCK_INDEX, shim->proxy_sock_fd,
+			POLLIN | POLLPRI);
+	return true;
+}
+
 /*
  * Print version information.
  */
@@ -968,12 +1046,16 @@ show_version(void) {
 void
 print_usage(void) {
         printf("%s: Usage\n", program_name);
-        printf("  -c,  --container-id   Container id\n");
-        printf("  -d,  --debug          Enable debug output\n");
-        printf("  -t,  --token          Connection token passed by cc-proxy\n");
-        printf("  -u,  --uri            Connection uri. Supported schemes are tcp: and unix:\n");
-        printf("  -v,  --version        Show version\n");
-        printf("  -h,  --help           Display this help message\n");
+        printf("  -c,  --container-id       Container id\n");
+        printf("  -d,  --debug              Enable debug output\n");
+        printf("  -r,  --reconnect-timeout  Reconnection timeout to " PROXY
+						" in seconds\n");
+        printf("  -t,  --token              Connection token passed by " PROXY
+						"\n");
+        printf("  -u,  --uri                Connection uri. Supported schemes "
+						"are tcp: and unix:\n");
+        printf("  -v,  --version            Show version\n");
+        printf("  -h,  --help               Display this help message\n");
 }
 
 int
@@ -983,6 +1065,7 @@ main(int argc, char **argv)
 		.container_id   =  NULL,
 		.proxy_sock_fd  = -1,
 		.token          =  NULL,
+		.timeout        =  RECONNECT_TIMEOUT_S,
 		.proxy_address  =  NULL,
 		.proxy_port     =  -1,
 	};
@@ -999,19 +1082,26 @@ main(int argc, char **argv)
 		{"container-id", required_argument, 0, 'c'},
 		{"debug", no_argument, 0, 'd'},
 		{"help", no_argument, 0, 'h'},
+		{"reconnect-timeout", required_argument, 0, 'r'},
 		{"token", required_argument, 0, 't'},
 		{"uri", required_argument, 0, 'u'},
 		{"version", no_argument, 0, 'v'},
 		{ 0, 0, 0, 0},
 	};
 
-	while ((c = getopt_long(argc, argv, "c:dht:u:v", prog_opts, NULL))!= -1) {
+	while ((c = getopt_long(argc, argv, "c:dhr:t:u:v", prog_opts, NULL))!= -1) {
 		switch (c) {
 			case 'c':
 				shim.container_id = strdup(optarg);
 				break;
 			case 't':
 				shim.token = strdup(optarg);
+				break;
+			case 'r':
+				shim.timeout = atoi(optarg);
+				if (shim.timeout <= 0) {
+					shim.timeout = RECONNECT_TIMEOUT_S;
+				}
 				break;
 			case 'd':
 				debug = true;
@@ -1074,14 +1164,6 @@ main(int argc, char **argv)
 	}
 
 	if (! connect_to_proxy(&shim)) {
-		goto out;
-	}
-
-	/* Send a Connect command to the proxy and wait for the response
-	 */
-	shim_debug("Sending initial connect command\n");
-	if (! send_connect_command(&shim)) {
-		shim_error("Could not send connect command to proxy\n");
 		goto out;
 	}
 
