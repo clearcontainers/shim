@@ -15,11 +15,7 @@
 package mock
 
 import (
-	"encoding/binary"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"net"
 	"os"
 	"sync"
@@ -247,50 +243,4 @@ func (proxy *Proxy) Stop() {
 	close(proxy.StdinReceived)
 	os.Remove(proxy.connectionPath)
 	proxy.log("Stopped")
-}
-
-const (
-	flagInError = 1 << (4 + iota)
-)
-
-const minHeaderLength = 12
-
-// WriteFrame reimplemented here till the one in api package
-// is implemented as goroutine-safe
-func WriteFrame(w io.Writer, frame *api.Frame) error {
-	header := &frame.Header
-
-	if len(frame.Payload) < header.PayloadLength {
-		return fmt.Errorf("frame: bad payload length %d",
-			header.PayloadLength)
-	}
-
-	// Prepare the header.
-	len := minHeaderLength + header.PayloadLength
-	buf := make([]byte, len)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(header.Version))
-	buf[2] = byte(header.HeaderLength / 4)
-	flags := byte(0)
-	if frame.Header.InError {
-		flags |= flagInError
-	}
-	buf[6] = flags | byte(header.Type)&0xf
-	buf[7] = byte(header.Opcode)
-	binary.BigEndian.PutUint32(buf[8:8+4], uint32(header.PayloadLength))
-
-	// Write payload if needed
-	if header.PayloadLength > 0 {
-		copy(buf[minHeaderLength:], frame.Payload[0:header.PayloadLength])
-	}
-
-	n, err := w.Write(buf)
-	if err != nil {
-		return err
-	}
-
-	if n != len {
-		return errors.New("frame: couldn't write frame")
-	}
-
-	return nil
 }

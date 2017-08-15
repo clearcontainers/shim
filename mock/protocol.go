@@ -160,7 +160,7 @@ func (proto *protocol) Serve(conn net.Conn, userData interface{}) error {
 		resp := proto.handleCommand(ctx, frame)
 
 		// Send the response back to the client.
-		if err = WriteFrame(conn, resp); err != nil {
+		if err = api.WriteFrame(conn, resp); err != nil {
 			// Something made us unable to write the response back
 			// to the client (could be a disconnection, ...).
 			return err
