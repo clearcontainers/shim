@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Intel Corporation
+// Copyright (c) 2017 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ import (
 //
 //       • Changed the frame header to include additional fields: version,
 //         header length, type and opcode.
+//       • Added a log messages for clients to insert log entries to the
+//         consolidated proxy log.
 //
 //   • version 1: initial version released with Clear Containers 2.1
 const Version = 2
@@ -53,6 +55,8 @@ const (
 	TypeMax
 )
 
+const unknown = "unknown"
+
 // String implements Stringer for FrameType.
 func (t FrameType) String() string {
 	switch t {
@@ -65,7 +69,7 @@ func (t FrameType) String() string {
 	case TypeNotification:
 		return "notification"
 	default:
-		return "unknown"
+		return unknown
 	}
 }
 
@@ -84,7 +88,8 @@ const (
 	CmdHyper
 	// CmdConnectShim identifies the client as a shim.
 	CmdConnectShim
-	// CmdDisconnectShim unregisters a shim.
+	// CmdDisconnectShim unregisters a shim. DisconnectShim is a bit
+	// special and doesn't send a Response back but closes the connection.
 	CmdDisconnectShim
 	// CmdSignal sends a signal to the process inside the VM. A client
 	// needs to be connected as a shim before it can issue that command.
@@ -111,7 +116,7 @@ func (t Command) String() string {
 	case CmdSignal:
 		return "Signal"
 	default:
-		return "unknown"
+		return unknown
 	}
 }
 
@@ -126,6 +131,11 @@ const (
 	StreamStdout
 	// StreamStderr is a stream conveying stderr data.
 	StreamStderr
+	// StreamLog is a stream conveying structured logs messages. Each Log frame
+	// contains a JSON object which fields are the structured log. By convention
+	// it would be nice to have a few common fields in log entries to ease
+	// post-processing. See the LogEntry payload for details.
+	StreamLog
 	// StreamMax is the number of stream types.
 	StreamMax
 )
@@ -139,8 +149,10 @@ func (s Stream) String() string {
 		return "stdout"
 	case StreamStderr:
 		return "stderr"
+	case StreamLog:
+		return "log"
 	default:
-		return "unknown"
+		return unknown
 	}
 }
 
@@ -161,7 +173,7 @@ func (n Notification) String() string {
 	case NotificationProcessExited:
 		return "ProcessExited"
 	default:
-		return "unknown"
+		return unknown
 	}
 }
 
