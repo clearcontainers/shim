@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/clearcontainers/shim/mock"
-	hypermock "github.com/containers/virtcontainers/hyperstart/mock"
+	hypermock "github.com/containers/virtcontainers/pkg/hyperstart/mock"
 	"github.com/stretchr/testify/assert"
 )
 
