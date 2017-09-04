@@ -20,6 +20,7 @@
 
 set -e
 
+mkdir -p m4
 autoreconf --force --install --symlink --warnings=all
 
 args="\
