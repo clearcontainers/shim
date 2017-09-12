@@ -64,7 +64,9 @@ int shim_signal_table[] = {
 	SIGIO,               /* I/O now possible */
 	SIGPWR,              /* Power failure restart */
 	//SIGSYS,            /* Bad system call */
+#ifdef SIGUNUSED
 	SIGUNUSED,
+#endif
 	0,
 };
 
