@@ -1,3 +1,5 @@
+[![Build Status](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-shim-azure-ubuntu-16-04/badge/icon)](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-shim-azure-ubuntu-16-04/)
+[![Build Status](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-shim-azure-ubuntu-17-04/badge/icon)](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-shim-azure-ubuntu-17-04/)
 [![Build Status](https://travis-ci.org/clearcontainers/shim.svg?branch=master)](https://travis-ci.org/clearcontainers/shim)
 [![Coverity](https://scan.coverity.com/projects/12134/badge.svg)](https://scan.coverity.com/projects/clearcontainers-shim)
 
