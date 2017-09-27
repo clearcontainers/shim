@@ -13,7 +13,7 @@
 # limitations under the License.
 
 AC_PREREQ([2.69])
-AC_INIT([shim], [3.0.0-alpha.4])
+AC_INIT([shim], [3.0.1])
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE([foreign -Wall -Werror -Wno-portability silent-rules subdir-objects color-tests no-dist-gzip dist-xz])
 AM_SILENT_RULES([yes])
