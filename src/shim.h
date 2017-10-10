@@ -14,6 +14,8 @@
 
 #include <stdio.h>
 
+#define PROXY "cc-proxy"
+
 /* The shim would be handling fixed number of predefined fds.
  * This would be signal fd, stdin fd and a proxy socket connection fd.
  */
@@ -23,6 +25,7 @@ struct cc_shim {
 	char       *container_id;
 	int         proxy_sock_fd;
 	char       *token;
+	int        timeout;		/* reconnection timeout to proxy */
 	char       *proxy_address;
 	int         proxy_port;
 };
