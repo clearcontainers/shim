@@ -17,6 +17,8 @@ ACLOCAL_AMFLAGS = -I m4
 # Has a value if building in a git tree
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
 
+TARGET = cc-shim
+
 # Has a value if building in a git-archive(1)-generated tree
 # (see .gitattributes).
 GENERATED_COMMIT = $(shell cat commit_id.fmt 2>/dev/null \| grep \'^[a-f0-9][a-f0-9]*\$\')
@@ -47,9 +49,10 @@ AM_LDFLAGS = -pie -z noexecstack -z relro -z now
 AM_CPPFLAGS = -D_FORTIFY_SOURCE=2 \
 		-DGIT_COMMIT=\"$(STORED_COMMIT)\"
 
-libexec_PROGRAMS = cc-shim
+libexec_PROGRAMS = $(TARGET)
 
 cc_shim_CFLAGS = \
+	-DSHIM_NAME="\"$(TARGET)\"" \
 	$(AM_CFLAGS)
 
 cc_shim_SOURCES = \

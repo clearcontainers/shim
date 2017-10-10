@@ -15,6 +15,15 @@
 #pragma once
 
 #include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Minimum size of buffer required to pass to get_time_iso8601() to allow it
+ * to display a time in ISO 8601 format (+1 for terminator):
+ *
+ *     2006-01-02T15:04:05.999999999-0700
+ */
+#define SHIM_TIME_BUFFER_SIZE (34+1)
 
 extern int shim_signal_table[];
 
@@ -27,3 +36,5 @@ void set_big_endian_32(uint8_t *buf, uint32_t val);
 uint32_t get_big_endian_32(const uint8_t *buf);
 void set_big_endian_64(uint8_t *buf, uint64_t val);
 uint64_t get_big_endian_64(const uint8_t *buf);
+int get_time_iso8601(char *buffer, size_t size);
+char *quote_string(const char *str);

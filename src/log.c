@@ -16,8 +16,12 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <string.h>
 
 #include "log.h"
+#include "utils.h"
 
 static bool debug;
 
@@ -34,6 +38,46 @@ void shim_log_init(bool _debug)
 	openlog(0, syslog_options, LOG_USER);
 }
 
+static const char *
+get_log_level(int priority) {
+	static const char *level = "unknown";
+
+	switch(priority) {
+	case LOG_EMERG:
+		level = "emergency";
+		break;
+
+	case LOG_ALERT:
+		level = "alert";
+		break;
+
+	case LOG_CRIT:
+		level = "critical";
+		break;
+
+	case LOG_ERR:
+		level = "error";
+		break;
+
+	case LOG_WARNING:
+		level = "warning";
+		break;
+
+	case LOG_NOTICE:
+		level = "notice";
+		break;
+
+	case LOG_INFO:
+		level = "info";
+		break;
+
+	case LOG_DEBUG:
+		level = "debug";
+	}
+
+	return level;
+}
+
 /*!
  * Log to syslog.
  *
@@ -46,6 +90,9 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 {
 	va_list vargs;
 	char *buf;
+	size_t len;
+	char time_buffer[SHIM_TIME_BUFFER_SIZE];
+	char *quoted = NULL;
 
 	if (! (format && func)) {
 		return;
@@ -69,7 +116,31 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 		fprintf(stderr, "%s:%d:%s\n", func, line_number, buf);
 	}
 
-	syslog(priority, "%s:%d:%s", func, line_number, buf);
+	len = strlen(buf);
+	if (len >= 2 && buf[len-1] == '\n') {
+		/* remove newline */
+		buf[len-1] = '\0';
+	}
+
+	if (get_time_iso8601 (time_buffer, sizeof(time_buffer)) < 0) {
+		time_buffer[0] = '\0';
+	}
+
+	quoted = quote_string(buf);
+	if (! quoted) {
+		return;
+	}
+
+	syslog(priority, "time=\"%s\" level=\"%s\" pid=%d function=\"%s\" line=%d source=\"%s\" name=\"%s\" msg=\"%s\"",
+			time_buffer,
+			get_log_level(priority),
+			getpid(),
+			func,
+			line_number,
+			"shim",
+			SHIM_NAME,
+			quoted);
 	va_end(vargs);
 	free(buf);
+	free(quoted);
 }
