@@ -531,7 +531,7 @@ handle_signals(struct cc_shim *shim) {
 
 			shim_debug("handled SIGWINCH for container %s "
 				"(rows=%d, columns=%d)\n",
-				shim->container_id? shim->container_id: "",
+				shim->container_id,
 				ws.ws_row, ws.ws_col);
 
 		} else {
@@ -539,7 +539,7 @@ handle_signals(struct cc_shim *shim) {
                                                          sig);
 			shim_debug("Sending signal %d to container %s\n",
 				sig,
-				shim->container_id? shim->container_id: "");
+				shim->container_id);
 		}
 		if (ret == -1) {
 			abort();
@@ -704,7 +704,7 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 				"to proxy at %s\n", shim->proxy_address);
 		}
 
-		shim_debug("Exit status for container: %d\n", code);
+		shim_debug("Exit status for container %s: %d\n", shim->container_id, code);
 		restore_terminal();
 		exit(code);
 	} else {
@@ -1131,6 +1131,10 @@ main(int argc, char **argv)
 				print_usage();
 				exit(EXIT_FAILURE);
 		}
+	}
+
+	if ( !shim.container_id) {
+		err_exit("Missing container ID\n");
 	}
 
 	if ( !shim.token) {
