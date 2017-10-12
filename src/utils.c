@@ -137,7 +137,7 @@ verify_base64url_format(char *s)
 	ret = asprintf(&regex, "^(%s{4})*(%s{4}|%s{3}=|%s{2}==)$",
 				alph_set, alph_set, alph_set, alph_set);
 
-	if ( !regex) {
+	if ( ret < 0 || !regex) {
 		abort();
 	}
 

@@ -314,7 +314,8 @@ bool
 send_connect_command(struct cc_shim *shim)
 {
 	char *payload = NULL;
-	bool ret;
+	int ret;
+	bool ret2;
 
 	if (! shim) {
 		return false;
@@ -335,19 +336,24 @@ send_connect_command(struct cc_shim *shim)
 	ret = asprintf(&payload,
 			"{\"token\":\"%s\"}", shim->token);
 
+	if (ret < 0) {
+		shim_error("cannot format payload");
+		return false;
+	}
+
 	if (! payload) {
 		abort();
 	}
 
-	ret = send_proxy_message(shim, frametype_command, cmd_connectshim,
+	ret2 = send_proxy_message(shim, frametype_command, cmd_connectshim,
 				payload, strlen(payload));
-	if (! ret) {
+	if (! ret2) {
 		shim_error("Could not send initial connect command to "
 				"proxy at %s\n", shim->proxy_address);
 	}
 
 	free(payload);
-	return ret;
+	return ret2;
 }
 
 bool reconnect_to_proxy(struct cc_shim *shim);
