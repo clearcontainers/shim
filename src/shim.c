@@ -269,6 +269,7 @@ write_frame(struct cc_shim *shim, struct frame *fr)
  * \param type Type of message
  * \param opcode Opcode of message type
  * \param payload Payload to be sent
+ * \param payload_len Size of \p payload
  * 
  * \return true on success, false otherwise
  */
@@ -392,7 +393,6 @@ bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
  * Read message received from proxy.
  *
  * \param shim \ref cc_shim
- * \param header \ref frame
  *
  * \return newly allocated frame on success, NULL otherwise
  */
