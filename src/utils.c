@@ -21,9 +21,13 @@
 #include <errno.h>
 #include <signal.h>
 #include <regex.h>
+#include <time.h>
 
 #include "log.h"
 #include "utils.h"
+
+/* Number of bytes to represent a time zone in format "[+-]9999" */
+#define SHIM_TZ_SIZE	5
 
 /* Signals that should be forwarded by the shim.
  * Commented out signals are handled by the default signal handler
@@ -246,3 +250,149 @@ get_big_endian_64(const uint8_t *buf)
 	val = ((uint64_t)get_big_endian_32(buf) << 32) | get_big_endian_32(buf+4);
 	return val;
 }
+
+/* Write the time in ISO 8601 / RFC3339 format to the specified buffer.
+ *
+ * \param buffer buffer to write formatted time to.
+ * \param size Size of \ref buffer (must be atleast SHIM_TIME_BUFFER_SIZE
+ *   bytes).
+ *
+ * \return 0 on success, or -1 on error.
+ */
+int
+get_time_iso8601(char *buffer, size_t size)
+{
+    int ret;
+
+    char zone[SHIM_TZ_SIZE+1];
+
+    struct tm *tm;
+    struct timespec now;
+
+    ret = clock_gettime(CLOCK_REALTIME, &now);
+    if (ret < 0) {
+        return -1;
+    }
+
+    tm = localtime(&now.tv_sec);
+    if (! tm) {
+        return -1;
+    }
+
+    ret = (int)strftime(zone, sizeof(zone), "%z", tm);
+    if (ret != SHIM_TZ_SIZE) {
+        return -1;
+    }
+
+    ret = snprintf(buffer,
+            size,
+
+            /* YYYY-MM-DD (10 bytes) */
+            "%4.4u-%2.2u-%2.2u" 
+
+            /* time separator (1 byte) */
+            "T"
+
+            /* HH:MM:SS (8 bytes) */
+            "%2.2u:%2.2d:%2.2u"
+
+            /* high-precision separator (1 byte) */
+            "."
+
+            /* nano-seconds (9 bytes) */
+            "%9.9lu"
+
+            /* time zone offset (SHIM_TZ_SIZE bytes) */
+            "%s",
+
+            tm->tm_year+1900,
+            tm->tm_mon+1,
+            tm->tm_mday,
+
+            tm->tm_hour,
+            tm->tm_min,
+            tm->tm_sec,
+
+            now.tv_nsec,
+
+            zone);
+
+
+    if (ret < 0 || (size_t)ret >= size) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Returns a copy of the specified string with every double-quote byte
+ * replaced by the two-byte sequence of backslash and double-quote ('\"').
+ *
+ * Note: It is the callers responsibility to:
+ *
+ * - free the returned string.
+ * - ensure the specified string is not already quoted.
+ */
+char *
+quote_string(const char *str)
+{
+	const char *start;
+	const char *p;
+	char from = '"';
+	const char *to = "\\\"";
+	char *result = NULL;
+	size_t quote_count = 0;
+	size_t len = 0;
+
+	// First, establish the number of quotes
+	// (and calculate the string length at the same time).
+	for (p = str; p && *p; p++) {
+		len++;
+
+		if (*p == from) {
+			quote_count++;
+		}
+	}
+
+	if (! quote_count) {
+		return strdup(str);
+	}
+
+	/* The returned string will contain 1 backslash for every
+	 * quote character found.
+	 */
+	result = calloc(len + quote_count + 1, sizeof(char));
+	if (! result) {
+		return NULL;
+	}
+
+	p = start = str;
+
+	while (p && *p) {
+		if (*p == from) {
+			size_t amount;
+
+			amount = (size_t)(p - start);
+
+			if (amount) {
+				/* Copy from start to match */
+				strncat(result, start, amount);
+			}
+
+			/* Nudge along the string, jumping over
+			 * matching character.
+			 */
+			start += (amount+1);
+
+			/* Copy replacement text */
+			strncat(result, to, strlen(to));
+		}
+		p++;
+	}
+
+	/* Copy remaining non-matching chars */
+	strncat(result, start, (size_t)(p - start));
+
+	return result;
+}
+
