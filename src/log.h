@@ -22,7 +22,8 @@ void shim_log_init(bool debug);
 void shim_log(int priority, 
 		const char *func,
 		int line_number,
-		const char *format, ...);
+		const char *format, ...)
+__attribute__ ((format (printf, 4, 5)));
 
 /*
  *   Acceptable values for priority:
