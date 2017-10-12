@@ -819,13 +819,13 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		char *port_offset = strstr(uri + tcp_uri_len, ":");
 
 		if ( !port_offset) {
-			shim_error("Missing port in uri %s\n", uri);
+			shim_error("Missing port in URI %s\n", uri);
 			goto out;
 		}
 
 		shim->proxy_port = (int)parse_numeric_option(port_offset + 1);
 		if (shim->proxy_port == -1) {
-			shim_error("Could not parse port in uri %s: %s\n",
+			shim_error("Could not parse port in URI %s: %s\n",
 					uri, strerror(errno));
 			goto out;
 		}
@@ -839,7 +839,7 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		}
 
 		if (addr_len == 0) {
-			shim_error("Missing tcp hostname in uri %s\n", uri);
+			shim_error("Missing tcp hostname in URI %s\n", uri);
 			goto out;
 		}
 
@@ -854,7 +854,7 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 				(size_t)addr_len * sizeof(char));
 		ret = true;
 	} else {
-		shim_error("Invalid uri scheme : %s\n", uri);
+		shim_error("Invalid URI scheme : %s\n", uri);
 	}
 out:
 	free(uri);
@@ -879,7 +879,7 @@ establish_connection_to_proxy(struct cc_shim *shim)
 		return false;
 	}
 
-	/* Uninitialised port means the uri provided is a
+	/* Uninitialised port means the URI provided is a
 	 * unix socket connection path
 	 */
 	if (shim->proxy_port == -1) {
@@ -1146,7 +1146,7 @@ main(int argc, char **argv)
 	}
 
 	if (! uri) {
-		err_exit("Missing connection uri\n");
+		err_exit("Missing connection URI\n");
 	}
 
 	shim_log_init(debug);
