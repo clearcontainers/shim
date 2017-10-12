@@ -72,6 +72,10 @@ int monitor_pipe[2] = {-1, -1};
 /* Byte sent from parent to notify its child it terminated properly */
 const char end_byte = 'E';
 
+/* Supported URI connection types */
+const char unix_uri[] = "unix://";
+const char tcp_uri[] = "tcp://";
+
 static char *program_name;
 
 struct termios *saved_term_settings;
@@ -789,8 +793,6 @@ parse_numeric_option(char *input) {
 bool
 parse_connection_uri(struct cc_shim *shim, char *uri)
 {
-	const char *unix_uri = "unix://";
-	const char *tcp_uri = "tcp://";
 	size_t      unix_uri_len = strlen(unix_uri);
 	size_t      tcp_uri_len = strlen(tcp_uri);
 	bool        ret = false;
@@ -1054,17 +1056,19 @@ show_version(void) {
  */
 void
 print_usage(void) {
-        printf("%s: Usage\n", program_name);
-        printf("  -c,  --container-id       Container id\n");
-        printf("  -d,  --debug              Enable debug output\n");
+        printf("Usage: %s [options]\n\n", program_name);
+        printf("  -c,  --container-id       Container ID (required).\n");
+        printf("  -d,  --debug              Enable debug output.\n");
         printf("  -r,  --reconnect-timeout  Reconnection timeout to " PROXY
-						" in seconds\n");
+						" in seconds (default: %d seconds).\n",
+						RECONNECT_TIMEOUT_S);
         printf("  -t,  --token              Connection token passed by " PROXY
-						"\n");
-        printf("  -u,  --uri                Connection uri. Supported schemes "
-						"are tcp: and unix:\n");
-        printf("  -v,  --version            Show version\n");
-        printf("  -h,  --help               Display this help message\n");
+						" (required).\n");
+        printf("  -u,  --uri                Connection URI of type '%s' or '%s' (required).\n",
+						unix_uri, tcp_uri);
+
+        printf("  -v,  --version            Show version.\n");
+        printf("\n");
 }
 
 int
