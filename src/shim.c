@@ -233,7 +233,6 @@ bool
 write_frame(struct cc_shim *shim, struct frame *fr)
 {
 	size_t     offset = 0;
-	ssize_t    ret;
 	ssize_t    total_size = 0;
 
 	if (! (shim && fr)) {
@@ -247,6 +246,8 @@ write_frame(struct cc_shim *shim, struct frame *fr)
 	}
 
 	while (offset < total_size) {
+		ssize_t ret;
+
 		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
 		if (ret == -1 && errno == EINTR) {
 			continue;
@@ -362,7 +363,6 @@ bool reconnect_to_proxy(struct cc_shim *shim);
  */
 bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
 {
-	ssize_t ret;
 	size_t offset = 0;
 
 	if ( shim->proxy_sock_fd < 0 || ! buf ) {
@@ -370,6 +370,8 @@ bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
 	}
 
 	while(offset < size) {
+		ssize_t ret;
+
 		ret = recv(shim->proxy_sock_fd, buf+offset, size-offset, 0);
 		if (ret == 0) {
 			shim_debug("Received EOF on file descriptor\n");
@@ -632,7 +634,6 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 {
 	int outfd = -1;
 	size_t offset = 0;
-	ssize_t ret;
 
 	if (! (shim && shim->proxy_address)) {
 		return;
@@ -653,6 +654,8 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 	}
 
 	while (offset < fr->header.payload_len) {
+		ssize_t ret;
+
 		ret = write(outfd, fr->payload + offset,
 				 (fr->header.payload_len - offset));
 		if (ret <= 0 ) {
@@ -673,8 +676,6 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 void
 handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 {
-	int code = 0;
-
 	if (! (shim && shim->proxy_address)) {
 		return;
 	}
@@ -684,6 +685,8 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 	}
 
 	if (fr->header.opcode == notification_exitcode) {
+		int code;
+
 		/* Send disconnect command to proxy and exit
 		 * with the exit code
 		*/
