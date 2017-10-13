@@ -72,6 +72,10 @@ int monitor_pipe[2] = {-1, -1};
 /* Byte sent from parent to notify its child it terminated properly */
 const char end_byte = 'E';
 
+/* Supported URI connection types */
+const char unix_uri[] = "unix://";
+const char tcp_uri[] = "tcp://";
+
 static char *program_name;
 
 struct termios *saved_term_settings;
@@ -233,7 +237,6 @@ bool
 write_frame(struct cc_shim *shim, struct frame *fr)
 {
 	size_t     offset = 0;
-	ssize_t    ret;
 	ssize_t    total_size = 0;
 
 	if (! (shim && fr)) {
@@ -247,6 +250,8 @@ write_frame(struct cc_shim *shim, struct frame *fr)
 	}
 
 	while (offset < total_size) {
+		ssize_t ret;
+
 		ret = write(shim->proxy_sock_fd, msg + offset, (size_t)total_size-offset);
 		if (ret == -1 && errno == EINTR) {
 			continue;
@@ -314,7 +319,8 @@ bool
 send_connect_command(struct cc_shim *shim)
 {
 	char *payload = NULL;
-	bool ret;
+	int ret;
+	bool ret2;
 
 	if (! shim) {
 		return false;
@@ -335,19 +341,24 @@ send_connect_command(struct cc_shim *shim)
 	ret = asprintf(&payload,
 			"{\"token\":\"%s\"}", shim->token);
 
+	if (ret < 0) {
+		shim_error("cannot format payload");
+		return false;
+	}
+
 	if (! payload) {
 		abort();
 	}
 
-	ret = send_proxy_message(shim, frametype_command, cmd_connectshim,
+	ret2 = send_proxy_message(shim, frametype_command, cmd_connectshim,
 				payload, strlen(payload));
-	if (! ret) {
+	if (! ret2) {
 		shim_error("Could not send initial connect command to "
 				"proxy at %s\n", shim->proxy_address);
 	}
 
 	free(payload);
-	return ret;
+	return ret2;
 }
 
 bool reconnect_to_proxy(struct cc_shim *shim);
@@ -363,7 +374,6 @@ bool reconnect_to_proxy(struct cc_shim *shim);
  */
 bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
 {
-	ssize_t ret;
 	size_t offset = 0;
 
 	if ( shim->proxy_sock_fd < 0 || ! buf ) {
@@ -371,6 +381,8 @@ bool read_wire_data(struct cc_shim *shim, uint8_t *buf, size_t size)
 	}
 
 	while(offset < size) {
+		ssize_t ret;
+
 		ret = recv(shim->proxy_sock_fd, buf+offset, size-offset, 0);
 		if (ret == 0) {
 			shim_debug("Received EOF on file descriptor\n");
@@ -523,7 +535,7 @@ handle_signals(struct cc_shim *shim) {
 
 			shim_debug("handled SIGWINCH for container %s "
 				"(rows=%d, columns=%d)\n",
-				shim->container_id? shim->container_id: "",
+				shim->container_id,
 				ws.ws_row, ws.ws_col);
 
 		} else {
@@ -531,7 +543,7 @@ handle_signals(struct cc_shim *shim) {
                                                          sig);
 			shim_debug("Sending signal %d to container %s\n",
 				sig,
-				shim->container_id? shim->container_id: "");
+				shim->container_id);
 		}
 		if (ret == -1) {
 			abort();
@@ -632,7 +644,6 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 {
 	int outfd = -1;
 	size_t offset = 0;
-	ssize_t ret;
 
 	if (! (shim && shim->proxy_address)) {
 		return;
@@ -653,6 +664,8 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 	}
 
 	while (offset < fr->header.payload_len) {
+		ssize_t ret;
+
 		ret = write(outfd, fr->payload + offset,
 				 (fr->header.payload_len - offset));
 		if (ret <= 0 ) {
@@ -673,8 +686,6 @@ handle_proxy_stream(struct cc_shim *shim, struct frame *fr)
 void
 handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 {
-	int code = 0;
-
 	if (! (shim && shim->proxy_address)) {
 		return;
 	}
@@ -684,6 +695,8 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 	}
 
 	if (fr->header.opcode == notification_exitcode) {
+		int code;
+
 		/* Send disconnect command to proxy and exit
 		 * with the exit code
 		*/
@@ -695,7 +708,7 @@ handle_proxy_notification(struct cc_shim *shim, struct frame *fr)
 				"to proxy at %s\n", shim->proxy_address);
 		}
 
-		shim_debug("Exit status for container: %d\n", code);
+		shim_debug("Exit status for container %s: %d\n", shim->container_id, code);
 		restore_terminal();
 		exit(code);
 	} else {
@@ -780,8 +793,6 @@ parse_numeric_option(char *input) {
 bool
 parse_connection_uri(struct cc_shim *shim, char *uri)
 {
-	const char *unix_uri = "unix://";
-	const char *tcp_uri = "tcp://";
 	size_t      unix_uri_len = strlen(unix_uri);
 	size_t      tcp_uri_len = strlen(tcp_uri);
 	bool        ret = false;
@@ -808,13 +819,13 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		char *port_offset = strstr(uri + tcp_uri_len, ":");
 
 		if ( !port_offset) {
-			shim_error("Missing port in uri %s\n", uri);
+			shim_error("Missing port in URI %s\n", uri);
 			goto out;
 		}
 
 		shim->proxy_port = (int)parse_numeric_option(port_offset + 1);
 		if (shim->proxy_port == -1) {
-			shim_error("Could not parse port in uri %s: %s\n",
+			shim_error("Could not parse port in URI %s: %s\n",
 					uri, strerror(errno));
 			goto out;
 		}
@@ -828,7 +839,7 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 		}
 
 		if (addr_len == 0) {
-			shim_error("Missing tcp hostname in uri %s\n", uri);
+			shim_error("Missing tcp hostname in URI %s\n", uri);
 			goto out;
 		}
 
@@ -843,7 +854,7 @@ parse_connection_uri(struct cc_shim *shim, char *uri)
 				(size_t)addr_len * sizeof(char));
 		ret = true;
 	} else {
-		shim_error("Invalid uri scheme : %s\n", uri);
+		shim_error("Invalid URI scheme : %s\n", uri);
 	}
 out:
 	free(uri);
@@ -868,7 +879,7 @@ establish_connection_to_proxy(struct cc_shim *shim)
 		return false;
 	}
 
-	/* Uninitialised port means the uri provided is a
+	/* Uninitialised port means the URI provided is a
 	 * unix socket connection path
 	 */
 	if (shim->proxy_port == -1) {
@@ -1045,17 +1056,19 @@ show_version(void) {
  */
 void
 print_usage(void) {
-        printf("%s: Usage\n", program_name);
-        printf("  -c,  --container-id       Container id\n");
-        printf("  -d,  --debug              Enable debug output\n");
+        printf("Usage: %s [options]\n\n", program_name);
+        printf("  -c,  --container-id       Container ID (required).\n");
+        printf("  -d,  --debug              Enable debug output.\n");
         printf("  -r,  --reconnect-timeout  Reconnection timeout to " PROXY
-						" in seconds\n");
+						" in seconds (default: %d seconds).\n",
+						RECONNECT_TIMEOUT_S);
         printf("  -t,  --token              Connection token passed by " PROXY
-						"\n");
-        printf("  -u,  --uri                Connection uri. Supported schemes "
-						"are tcp: and unix:\n");
-        printf("  -v,  --version            Show version\n");
-        printf("  -h,  --help               Display this help message\n");
+						" (required).\n");
+        printf("  -u,  --uri                Connection URI of type '%s' or '%s' (required).\n",
+						unix_uri, tcp_uri);
+
+        printf("  -v,  --version            Show version.\n");
+        printf("\n");
 }
 
 int
@@ -1124,12 +1137,16 @@ main(int argc, char **argv)
 		}
 	}
 
+	if ( !shim.container_id) {
+		err_exit("Missing container ID\n");
+	}
+
 	if ( !shim.token) {
 		err_exit("Missing connection token\n");
 	}
 
 	if (! uri) {
-		err_exit("Missing connection uri\n");
+		err_exit("Missing connection URI\n");
 	}
 
 	shim_log_init(debug);
