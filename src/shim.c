@@ -1248,7 +1248,7 @@ main(int argc, char **argv)
 			 * let's send SIGKILL to the process inside the VM
 			 */
 			shim_debug("Parent has terminated because of SIGKILL"
-				"/nForwarding the SIGKILL to the container"
+				" - forwarding the SIGKILL to the container"
 				" process");
 
 			signal_handler(SIGKILL);
