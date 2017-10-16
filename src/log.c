@@ -112,6 +112,8 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 		return;
 	}
 
+	va_end(vargs);
+
 	if (priority <=  LOG_ERR) {
 		fprintf(stderr, "%s:%d:%s\n", func, line_number, buf);
 	}
@@ -140,7 +142,7 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 			"shim",
 			SHIM_NAME,
 			quoted);
-	va_end(vargs);
+
 	free(buf);
 	free(quoted);
 }
