@@ -131,10 +131,8 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 		time_buffer[0] = '\0';
 	}
 
+	/* Handle failure scenario below */
 	quoted = quote_string(buf);
-	if (! quoted) {
-		return;
-	}
 
 	syslog(priority, "time=\"%s\" level=\"%s\" pid=%d function=\"%s\" line=%d source=\"%s\" name=\"%s\" msg=\"%s\"",
 			time_buffer,
@@ -144,7 +142,11 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 			line_number,
 			"shim",
 			SHIM_NAME,
-			quoted);
+
+			/* log the original message if it couldn't be quoted
+			 * (better than nothing)
+			 */
+			quoted ? quoted : buf);
 
 	free(buf);
 	free(quoted);
