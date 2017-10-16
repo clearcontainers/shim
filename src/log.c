@@ -125,6 +125,9 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 	}
 
 	if (get_time_iso8601 (time_buffer, sizeof(time_buffer)) < 0) {
+		/* log a blank time on error as something is better than
+		 * nothing (the system logger can still provide a timestamp).
+		 */
 		time_buffer[0] = '\0';
 	}
 
