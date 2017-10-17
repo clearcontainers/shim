@@ -112,6 +112,8 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 		return;
 	}
 
+	va_end(vargs);
+
 	if (priority <=  LOG_ERR) {
 		fprintf(stderr, "%s:%d:%s\n", func, line_number, buf);
 	}
@@ -123,13 +125,14 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 	}
 
 	if (get_time_iso8601 (time_buffer, sizeof(time_buffer)) < 0) {
+		/* log a blank time on error as something is better than
+		 * nothing (the system logger can still provide a timestamp).
+		 */
 		time_buffer[0] = '\0';
 	}
 
+	/* Handle failure scenario below */
 	quoted = quote_string(buf);
-	if (! quoted) {
-		return;
-	}
 
 	syslog(priority, "time=\"%s\" level=\"%s\" pid=%d function=\"%s\" line=%d source=\"%s\" name=\"%s\" msg=\"%s\"",
 			time_buffer,
@@ -139,8 +142,12 @@ void shim_log(int priority, const char *func, int line_number, const char *forma
 			line_number,
 			"shim",
 			SHIM_NAME,
-			quoted);
-	va_end(vargs);
+
+			/* log the original message if it couldn't be quoted
+			 * (better than nothing)
+			 */
+			quoted ? quoted : buf);
+
 	free(buf);
 	free(quoted);
 }
