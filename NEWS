@@ -1,5 +1,13 @@
+3.0.4
+    CI: remove tests from run.sh script
+    Add missing vargs call
+    logging: Fix odd log message
+    Make container id mandatory
+    docs: Fix doxygen issues
+    logging: Use structured logging
+
 3.0.3
-		Support to re-connect to proxy
+    Support to re-connect to proxy
 
 3.0.0-alpha.4
     Support for version
