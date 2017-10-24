@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"log"
 	"log/syslog"
+	"net"
+	"net/url"
 	"os"
 
 	"github.com/urfave/cli"
@@ -27,13 +29,30 @@ var shimLog *log.Logger
 
 type shim struct {
 	params shimParams
+	conn   net.Conn
 }
 
 type shimParams struct {
 	cid   string
 	token string
-	uri   string
+	uri   url.URL
 	debug bool
+}
+
+func logDebug(msg interface{}) {
+	shimLog.Printf("DEBUG: %v", msg)
+}
+
+func logInfo(msg interface{}) {
+	shimLog.Printf("INFO: %v", msg)
+}
+
+func logWarn(msg interface{}) {
+	shimLog.Printf("WARN: %v", msg)
+}
+
+func logError(msg interface{}) {
+	shimLog.Printf("ERROR: %v", msg)
 }
 
 func parseCLIParams(context *cli.Context) (shimParams, error) {
@@ -51,13 +70,28 @@ func parseCLIParams(context *cli.Context) (shimParams, error) {
 	if uri == "" {
 		return shimParams{}, fmt.Errorf("Empty URI")
 	}
+	parsedURI, err := url.Parse(uri)
+	if err != nil {
+		return shimParams{}, fmt.Errorf("Could not parse URI %q: %v", uri, err)
+	}
 
 	return shimParams{
 		cid:   cid,
 		token: token,
-		uri:   uri,
+		uri:   *parsedURI,
 		debug: context.Bool("debug"),
 	}, nil
+}
+
+func (s *shim) connectURI() error {
+	conn, err := net.Dial(s.params.uri.Scheme, s.params.uri.Host)
+	if err != nil {
+		return err
+	}
+
+	s.conn = conn
+
+	return nil
 }
 
 func initialize(context *cli.Context) (*shim, error) {
@@ -69,7 +103,7 @@ func initialize(context *cli.Context) (*shim, error) {
 		return nil, err
 	}
 
-	shimLog.Print("Shim initialized")
+	logInfo("Shim initialized")
 
 	shimParams, err := parseCLIParams(context)
 	if err != nil {
@@ -79,6 +113,15 @@ func initialize(context *cli.Context) (*shim, error) {
 	return &shim{
 		params: shimParams,
 	}, nil
+}
+
+func (s *shim) setup() error {
+	// Connect URI
+	if err := s.connectURI(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
@@ -114,10 +157,15 @@ func main() {
 		},
 	}
 
-	shimCLI.Action = func(c *cli.Context) error {
-		_, err := initialize(c)
+	shimCLI.Action = func(context *cli.Context) error {
+		shim, err := initialize(context)
 		if err != nil {
-			shimLog.Fatalf("Shim error: %v", err)
+			logError(err)
+			return err
+		}
+
+		if err := shim.setup();err != nil {
+			logError(err)
 			return err
 		}
 
