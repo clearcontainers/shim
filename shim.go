@@ -15,10 +15,26 @@
 package main
 
 import (
+	"log"
+	"log/syslog"
 	"os"
 
 	"github.com/urfave/cli"
 )
+
+var shimLog *log.Logger
+
+func initialize(c *cli.Context) (err error) {
+	// Initialize system logs
+	shimLog, err = syslog.NewLogger(syslog.LOG_INFO, log.Ltime)
+	if err != nil {
+		return err
+	}
+
+	shimLog.Print("Shim initialized")
+
+	return nil
+}
 
 func main() {
 	// Read flags from CLI
@@ -54,6 +70,10 @@ func main() {
 	}
 
 	shimCLI.Action = func(c *cli.Context) error {
+		if err := initialize(c); err != nil {
+			return err
+		}
+
 		return nil
 	}
 
