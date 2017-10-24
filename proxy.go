@@ -15,12 +15,13 @@
 package main
 
 import (
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"syscall"
 	"unsafe"
+
+	"github.com/clearcontainers/proxy/api"
 )
 
 /* 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
@@ -39,55 +40,6 @@ import (
  * └────────────────────────────────────────────────────────────┘
  */
 
-const (
-	proxyVersion      = 2
-	versionOffset     = 0
-	headerLenOffset   = 2
-	typeOffset        = 6
-	opCodeOffset      = 7
-	payloadLenOffset  = 8
-	payloadOffset     = 12
-	proxyHeaderLength = payloadOffset * 8
-	minSizeReadBuf    = (2 + 1) * 8
-)
-
-type proxyHeader struct {
-	version       uint16
-	headerLength  uint8
-	err           uint8
-	frameType     uint8
-	opCode        uint8
-	payloadLength uint32
-}
-
-type proxyFrame struct {
-	header  proxyHeader
-	payload []byte
-}
-
-const (
-	frameTypeCommand uint8 = iota
-	frameTypeResponse
-	frameTypeStream
-	frameTypeNotification
-)
-
-const (
-	cmdRegisterVM uint8 = iota
-	cmdUnregisterVM
-	cmdAttachVM
-	cmdHyper
-	cmdConnectShim
-	cmdDisconnectShim
-	cmdSignal
-)
-
-const (
-	streamStdin uint8 = iota
-	streamStdout
-	streamStderr
-)
-
 type window struct {
 	row    uint16
 	col    uint16
@@ -95,53 +47,34 @@ type window struct {
 	yPixel uint16
 }
 
-func sendMessageProxy(conn net.Conn, frameType uint8, opCode uint8, payload string) error {
-	frame := proxyFrame{
-		header: proxyHeader{
-			version:      proxyVersion,
-			headerLength: proxyHeaderLength,
-			frameType:    frameType,
-			opCode:       opCode,
-		},
+func (s *shim) connectProxy() error {
+	payload := api.ConnectShim{
+		Token: s.params.token,
 	}
 
-	if payload != "" {
-		frame.payload = []byte(payload)
-		frame.header.payloadLength = uint32(len(payload))
-	}
-
-	logInfo(fmt.Sprintf("Sending frame: %+v", frame))
-
-	totalLength := int(frame.header.headerLength) + int(frame.header.payloadLength)
-	frameSlice := make([]byte, totalLength)
-
-	binary.BigEndian.PutUint16(frameSlice[versionOffset:], frame.header.version)
-	frameSlice[headerLenOffset] = byte(frame.header.headerLength)
-	frameSlice[typeOffset] = byte(frame.header.opCode & 0xF)
-	binary.BigEndian.PutUint32(frameSlice[payloadLenOffset:], frame.header.payloadLength)
-	copy(frameSlice[payloadOffset:], frame.payload)
-
-	n, err := conn.Write(frameSlice)
+	payloadBuf, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	if n != totalLength {
-		return fmt.Errorf("Could not send message to proxy")
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return api.WriteCommand(s.conn, api.CmdConnectShim, payloadBuf)
+}
+
+func (s *shim) handleSignal(signal os.Signal) error {
+	sig, ok := signal.(syscall.Signal)
+	if !ok {
+		return fmt.Errorf("Could not cast the signal %q", signal.String())
 	}
 
-	return nil
-}
+	payload := api.Signal{
+		SignalNumber: int(sig),
+	}
 
-func bindProxy(conn net.Conn, token string) error {
-	return sendMessageProxy(conn, frameTypeCommand, cmdConnectShim,
-		fmt.Sprintf("{\"token\":\"%s\"}", token))
-}
-
-func sendSignal(conn net.Conn, signal os.Signal) error {
-	payload := fmt.Sprintf("{\"signalNumber\":%d}", signal)
-
-	if signal == syscall.SIGWINCH {
-		w := new(window)
+	if sig == syscall.SIGWINCH {
+		w := window{}
 		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
 			os.Stdin.Fd(),
 			syscall.TIOCGWINSZ,
@@ -150,69 +83,88 @@ func sendSignal(conn net.Conn, signal os.Signal) error {
 			return error(errno)
 		}
 
-		payload = fmt.Sprintf("{\"signalNumber\":%d,\"rows\":%d,\"columns\":%d}",
-			signal, w.row, w.col)
+		payload.Columns = int(w.col)
+		payload.Rows = int(w.row)
 	}
 
-	return sendMessageProxy(conn, frameTypeCommand, cmdSignal, payload)
-}
-
-func sendStdin(conn net.Conn, msg string) error {
-	return sendMessageProxy(conn, frameTypeStream, streamStdin, msg)
-}
-
-func readFrameProxy(conn net.Conn) (proxyFrame, error) {
-	frameBuf := []byte{}
-
-	buf, err := readBytesLen(conn, minSizeReadBuf)
+	payloadBuf, err := json.Marshal(payload)
 	if err != nil {
-		return proxyFrame{}, err
+		return err
 	}
 
-	frameBuf = append(frameBuf, buf...)
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
-	headerLen := int(frameBuf[headerLenOffset])
-	remainingHeaderLen := headerLen - minSizeReadBuf
-
-	if remainingHeaderLen < 0 {
-		return proxyFrame{}, fmt.Errorf("Invalid header length %d", headerLen)
-	} else if remainingHeaderLen == 0 {
-		return proxyFrame{
-			header: proxyHeader{
-				version:      binary.BigEndian.Uint16(frameBuf[:headerLenOffset]),
-				headerLength: uint8(frameBuf[headerLenOffset]),
-			},
-		}, nil
-	}
-
-	buf, err = readBytesLen(conn, remainingHeaderLen)
-	if err != nil {
-		return proxyFrame{}, err
-	}
-
-	frameBuf = append(frameBuf, buf...)
-
-	return proxyFrame{}, nil
+	return api.WriteCommand(s.conn, api.CmdSignal, payloadBuf)
 }
 
-func readBytesLen(conn net.Conn, length int) ([]byte, error) {
-	needRead := length
-	read := 0
-	buf := make([]byte, 512)
-	res := []byte{}
-	for read < needRead {
-		want := needRead - read
-		if want > 512 {
-			want = 512
-		}
-		nr, err := conn.Read(buf[:want])
-		if err != nil {
-			return nil, err
+func (s *shim) handleStdin(payload []byte) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return api.WriteStream(s.conn, api.StreamStdin, payload)
+}
+
+func (s *shim) handleProxyFrame(frame *api.Frame) error {
+	switch frame.Header.Type {
+	case api.TypeCommand:
+		return fmt.Errorf("Proxy should not send command")
+	case api.TypeResponse:
+		return s.handleProxyResponse(frame)
+	case api.TypeStream:
+		return s.handleProxyStream(frame)
+	case api.TypeNotification:
+		return s.handleProxyNotif(frame)
+	default:
+		return fmt.Errorf("Unknown frame type %d", frame.Header.Type)
+	}
+}
+
+func (s *shim) handleProxyResponse(frame *api.Frame) error {
+	if frame.Header.InError {
+		if frame.Header.Opcode == int(api.CmdConnectShim) {
+			logError("Error response received from proxy on ConnectShim command")
+			return fmt.Errorf("ConnectShim command failed")
 		}
 
-		res = append(res, buf[:nr]...)
-		read = read + nr
+		logWarn("Error response received from proxy")
+
+		// Ignore error received if it's not caused by shim connection.
+		return nil
 	}
 
-	return res, nil
+	logInfo(fmt.Sprintf("Response from proxy %q", string(frame.Payload)))
+
+	return nil
+}
+
+func (s *shim) handleProxyStream(frame *api.Frame) error {
+	var outFd *os.File
+
+	if frame.Header.Opcode == int(api.StreamStdout) {
+		outFd = os.Stdout
+	} else if frame.Header.Opcode == int(api.StreamStderr) {
+		outFd = os.Stderr
+	} else {
+		logWarn(fmt.Sprintf("Invalid stream opcode %d", frame.Header.Opcode))
+		return nil
+	}
+
+	_, err := outFd.Write(frame.Payload)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *shim) handleProxyNotif(frame *api.Frame) error {
+	if frame.Header.Opcode == api.NotificationProcessExited {
+		s.exitCode = int(frame.Payload[0])
+		s.hasToExit = true
+		return nil
+	}
+
+	logWarn(fmt.Sprintf("Unknown notif opcode %d", frame.Header.Opcode))
+	return nil
 }

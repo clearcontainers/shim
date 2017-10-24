@@ -16,20 +16,36 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"log/syslog"
 	"net"
 	"net/url"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"unsafe"
 
+	"github.com/clearcontainers/proxy/api"
 	"github.com/urfave/cli"
+	"golang.org/x/sys/unix"
 )
 
 var shimLog *log.Logger
+var debugFlag bool
 
 type shim struct {
-	params shimParams
-	conn   net.Conn
+	params    shimParams
+	conn      net.Conn
+	frameCh   chan *api.Frame
+	stdinCh   chan []byte
+	signalCh  chan os.Signal
+	errCh     chan error
+	termios   unix.Termios
+	lock      sync.Mutex
+	hasToExit bool
+	exitCode  int
 }
 
 type shimParams struct {
@@ -40,6 +56,10 @@ type shimParams struct {
 }
 
 func logDebug(msg interface{}) {
+	if debugFlag {
+		return
+	}
+
 	shimLog.Printf("DEBUG: %v", msg)
 }
 
@@ -83,13 +103,142 @@ func parseCLIParams(context *cli.Context) (shimParams, error) {
 	}, nil
 }
 
+// isTerminal returns true if fd is a terminal, else false
+func isTerminal(fd uintptr) bool {
+	var termios syscall.Termios
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&termios)))
+	return err == 0
+}
+
+func ioctl(fd uintptr, flag, data uintptr) error {
+	if _, _, err := unix.Syscall(unix.SYS_IOCTL, fd, flag, data); err != 0 {
+		return err
+	}
+	return nil
+}
+
 func (s *shim) connectURI() error {
-	conn, err := net.Dial(s.params.uri.Scheme, s.params.uri.Host)
+	logInfo(fmt.Sprintf("URI provided: %+v", s.params.uri))
+
+	conn, err := net.Dial(s.params.uri.Scheme, s.params.uri.Path)
 	if err != nil {
 		return err
 	}
 
 	s.conn = conn
+
+	return nil
+}
+
+func saneTerminal(terminal *os.File) error {
+	// Go doesn't have a wrapper for any of the termios ioctls.
+	var termios unix.Termios
+
+	if err := ioctl(terminal.Fd(), unix.TCGETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return fmt.Errorf("ioctl(tty, tcgets): %s", err.Error())
+	}
+
+	// Set -onlcr so we don't have to deal with \r.
+	termios.Oflag &^= unix.ONLCR
+
+	if err := ioctl(terminal.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
+	}
+
+	return nil
+}
+
+func (s *shim) setupTerminal() error {
+	if !isTerminal(os.Stdin.Fd()) {
+		return nil
+	}
+
+	var termios unix.Termios
+
+	if err := ioctl(os.Stdin.Fd(), unix.TCGETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return fmt.Errorf("ioctl(tty, tcgets): %s", err.Error())
+	}
+
+	s.termios = termios
+
+	// Set the terminal in raw mode
+	termios.Iflag &^= (unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON)
+	termios.Oflag &^= unix.OPOST
+	termios.Lflag &^= (unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN)
+	termios.Cflag &^= (unix.CSIZE | unix.PARENB)
+	termios.Cflag |= unix.CS8
+	termios.Cc[unix.VMIN] = 1
+	termios.Cc[unix.VTIME] = 0
+
+	if err := ioctl(os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
+	}
+
+	logInfo("End of setupTerminal()")
+
+	return nil
+}
+
+func (s *shim) restoreTerminal() error {
+	if !isTerminal(os.Stdin.Fd()) {
+		return nil
+	}
+
+	if err := ioctl(os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&s.termios))); err != nil {
+		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
+	}
+
+	return nil
+}
+
+func (s *shim) setupSignals() error {
+	s.signalCh = make(chan os.Signal)
+
+	signal.Notify(s.signalCh)
+
+	return nil
+}
+
+func (s *shim) setupProxyMessages() error {
+	s.frameCh = make(chan *api.Frame)
+
+	go func() {
+		for {
+			frame, err := api.ReadFrame(s.conn)
+			if err != nil {
+				s.errCh <- err
+			}
+
+			if frame == nil {
+				s.errCh <- fmt.Errorf("Frame retrieved is nil")
+			}
+
+			s.frameCh <- frame
+		}
+	}()
+
+	return nil
+}
+
+func (s *shim) setupStdin() error {
+	s.stdinCh = make(chan []byte)
+
+	go func() {
+		for {
+			buf := make([]byte, 512)
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+
+				s.errCh <- err
+			}
+
+			logDebug(fmt.Sprintf("Read %q from STDIN", string(buf[:n])))
+			s.stdinCh <- buf[:n]
+		}
+	}()
 
 	return nil
 }
@@ -110,6 +259,10 @@ func initialize(context *cli.Context) (*shim, error) {
 		return nil, err
 	}
 
+	if shimParams.debug {
+		debugFlag = true
+	}
+
 	return &shim{
 		params: shimParams,
 	}, nil
@@ -122,8 +275,55 @@ func (s *shim) setup() error {
 	}
 
 	// Connect proxy
-	if err := bindProxy(s.conn, s.params.token); err != nil {
+	if err := s.connectProxy(); err != nil {
 		return err
+	}
+
+	// Setup terminal
+	if err := s.setupTerminal(); err != nil {
+		return err
+	}
+
+	// Setup signals
+	if err := s.setupSignals(); err != nil {
+		return err
+	}
+
+	// Setup proxy messages read loop
+	if err := s.setupProxyMessages(); err != nil {
+		return err
+	}
+
+	// Setup STDIN read loop
+	if err := s.setupStdin(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *shim) mainLoop() error {
+	for {
+		select {
+		case frame := <-s.frameCh:
+			if err := s.handleProxyFrame(frame); err != nil {
+				return err
+			}
+		case sig := <-s.signalCh:
+			if err := s.handleSignal(sig); err != nil {
+				return err
+			}
+		case input := <-s.stdinCh:
+			if err := s.handleStdin(input); err != nil {
+				return err
+			}
+		case err := <-s.errCh:
+			return err
+		}
+
+		if s.hasToExit {
+			break
+		}
 	}
 
 	return nil
@@ -173,6 +373,15 @@ func main() {
 			logError(err)
 			return err
 		}
+
+		if err := shim.mainLoop(); err != nil {
+			logError(err)
+			return err
+		}
+
+		shim.restoreTerminal()
+
+		os.Exit(shim.exitCode)
 
 		return nil
 	}
