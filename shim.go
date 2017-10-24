@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"log/syslog"
 	"os"
@@ -24,16 +25,60 @@ import (
 
 var shimLog *log.Logger
 
-func initialize(c *cli.Context) (err error) {
+type shim struct {
+	params shimParams
+}
+
+type shimParams struct {
+	cid   string
+	token string
+	uri   string
+	debug bool
+}
+
+func parseCLIParams(context *cli.Context) (shimParams, error) {
+	cid := context.String("container-id")
+	if cid == "" {
+		return shimParams{}, fmt.Errorf("Empty container ID")
+	}
+
+	token := context.String("token")
+	if token == "" {
+		return shimParams{}, fmt.Errorf("Empty token")
+	}
+
+	uri := context.String("uri")
+	if uri == "" {
+		return shimParams{}, fmt.Errorf("Empty URI")
+	}
+
+	return shimParams{
+		cid:   cid,
+		token: token,
+		uri:   uri,
+		debug: context.Bool("debug"),
+	}, nil
+}
+
+func initialize(context *cli.Context) (*shim, error) {
+	var err error
+
 	// Initialize system logs
 	shimLog, err = syslog.NewLogger(syslog.LOG_INFO, log.Ltime)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	shimLog.Print("Shim initialized")
 
-	return nil
+	shimParams, err := parseCLIParams(context)
+	if err != nil {
+		return nil, err
+	}
+
+	return &shim{
+		params: shimParams,
+	}, nil
 }
 
 func main() {
@@ -70,7 +115,9 @@ func main() {
 	}
 
 	shimCLI.Action = func(c *cli.Context) error {
-		if err := initialize(c); err != nil {
+		_, err := initialize(c)
+		if err != nil {
+			shimLog.Fatalf("Shim error: %v", err)
 			return err
 		}
 
