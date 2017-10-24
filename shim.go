@@ -121,6 +121,11 @@ func (s *shim) setup() error {
 		return err
 	}
 
+	// Connect proxy
+	if err := bindProxy(s.conn, s.params.token); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -164,7 +169,7 @@ func main() {
 			return err
 		}
 
-		if err := shim.setup();err != nil {
+		if err := shim.setup(); err != nil {
 			logError(err)
 			return err
 		}
