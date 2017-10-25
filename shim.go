@@ -103,20 +103,6 @@ func parseCLIParams(context *cli.Context) (shimParams, error) {
 	}, nil
 }
 
-// isTerminal returns true if fd is a terminal, else false
-func isTerminal(fd uintptr) bool {
-	var termios syscall.Termios
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&termios)))
-	return err == 0
-}
-
-func ioctl(fd uintptr, flag, data uintptr) error {
-	if _, _, err := unix.Syscall(unix.SYS_IOCTL, fd, flag, data); err != 0 {
-		return err
-	}
-	return nil
-}
-
 func (s *shim) connectURI() error {
 	logInfo(fmt.Sprintf("URI provided: %+v", s.params.uri))
 
@@ -142,22 +128,11 @@ func (s *shim) disconnectURI() error {
 	return s.conn.Close()
 }
 
-func saneTerminal(terminal *os.File) error {
-	// Go doesn't have a wrapper for any of the termios ioctls.
-	var termios unix.Termios
+func isTerminal(fd uintptr) bool {
+	var termios syscall.Termios
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&termios)))
 
-	if err := ioctl(terminal.Fd(), unix.TCGETS, uintptr(unsafe.Pointer(&termios))); err != nil {
-		return fmt.Errorf("ioctl(tty, tcgets): %s", err.Error())
-	}
-
-	// Set -onlcr so we don't have to deal with \r.
-	termios.Oflag &^= unix.ONLCR
-
-	if err := ioctl(terminal.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
-		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
-	}
-
-	return nil
+	return err == 0
 }
 
 func (s *shim) setupTerminal() error {
@@ -167,8 +142,8 @@ func (s *shim) setupTerminal() error {
 
 	var termios unix.Termios
 
-	if err := ioctl(os.Stdin.Fd(), unix.TCGETS, uintptr(unsafe.Pointer(&termios))); err != nil {
-		return fmt.Errorf("ioctl(tty, tcgets): %s", err.Error())
+	if _, _, err := unix.Syscall(unix.SYS_IOCTL, os.Stdin.Fd(), unix.TCGETS, uintptr(unsafe.Pointer(&termios))); err != 0 {
+		return fmt.Errorf("Could not get tty info: %s", err.Error())
 	}
 
 	s.termios = termios
@@ -182,11 +157,9 @@ func (s *shim) setupTerminal() error {
 	termios.Cc[unix.VMIN] = 1
 	termios.Cc[unix.VTIME] = 0
 
-	if err := ioctl(os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
-		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
+	if _, _, err := unix.Syscall(unix.SYS_IOCTL, os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&termios))); err != 0 {
+		return fmt.Errorf("Could not set tty in raw mode: %s", err.Error())
 	}
-
-	logInfo("End of setupTerminal()")
 
 	return nil
 }
@@ -196,8 +169,8 @@ func (s *shim) restoreTerminal() error {
 		return nil
 	}
 
-	if err := ioctl(os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&s.termios))); err != nil {
-		return fmt.Errorf("ioctl(tty, tcsets): %s", err.Error())
+	if _, _, err := unix.Syscall(unix.SYS_IOCTL, os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&s.termios))); err != 0 {
+		return fmt.Errorf("Could not restore tty settings: %s", err.Error())
 	}
 
 	return nil
