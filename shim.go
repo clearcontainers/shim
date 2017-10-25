@@ -15,6 +15,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -32,20 +34,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	childProcessName = "shim-child"
+	endByte          = 'E'
+)
+
 var shimLog *log.Logger
 var debugFlag bool
 
 type shim struct {
-	params    shimParams
-	conn      net.Conn
-	frameCh   chan *api.Frame
-	stdinCh   chan []byte
-	signalCh  chan os.Signal
-	errCh     chan error
-	termios   unix.Termios
-	lock      sync.Mutex
-	hasToExit bool
-	exitCode  int
+	params       shimParams
+	conn         net.Conn
+	pipeChild    *os.File
+	frameCh      chan *api.Frame
+	stdinCh      chan []byte
+	signalCh     chan os.Signal
+	errCh        chan error
+	termios      unix.Termios
+	savedTermios bool
+	lock         sync.Mutex
+	hasToExit    bool
+	exitCode     int
 }
 
 type shimParams struct {
@@ -53,6 +62,11 @@ type shimParams struct {
 	token string
 	uri   url.URL
 	debug bool
+}
+
+func initSyslog() (err error) {
+	shimLog, err = syslog.NewLogger(syslog.LOG_INFO, log.Ltime)
+	return
 }
 
 func logDebug(msg interface{}) {
@@ -147,6 +161,7 @@ func (s *shim) setupTerminal() error {
 	}
 
 	s.termios = termios
+	s.savedTermios = true
 
 	// Set the terminal in raw mode
 	termios.Iflag &^= (unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON)
@@ -171,6 +186,52 @@ func (s *shim) restoreTerminal() error {
 
 	if _, _, err := unix.Syscall(unix.SYS_IOCTL, os.Stdin.Fd(), unix.TCSETS, uintptr(unsafe.Pointer(&s.termios))); err != 0 {
 		return fmt.Errorf("Could not restore tty settings: %s", err.Error())
+	}
+
+	return nil
+}
+
+func (s *shim) spawnChildWatchdog() error {
+	var connFile *os.File
+	var err error
+
+	switch conn := s.conn.(type) {
+	case *net.TCPConn:
+		connFile, err = conn.File()
+		if err != nil {
+			return err
+		}
+	case *net.UnixConn:
+		connFile, err = conn.File()
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("Unknown net.Conn type")
+	}
+
+	child, parent, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer child.Close()
+
+	s.pipeChild = parent
+
+	cmd := exec.Cmd{
+		Path:        "/proc/self/exe",
+		Args:        []string{childProcessName},
+		ExtraFiles:  []*os.File{child, connFile},
+	}
+
+	logInfo(fmt.Sprintf("Parent PID %d", os.Getpid()))
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	if err := json.NewEncoder(s.pipeChild).Encode(s.termios); err != nil {
+		return err
 	}
 
 	return nil
@@ -233,15 +294,8 @@ func (s *shim) setupStdin() error {
 }
 
 func initialize(context *cli.Context) (*shim, error) {
-	var err error
-
-	// Initialize system logs
-	shimLog, err = syslog.NewLogger(syslog.LOG_INFO, log.Ltime)
-	if err != nil {
-		return nil, err
-	}
-
-	logInfo("Shim initialized")
+	logInfo("Shim initialize: start")
+	defer logInfo("Shim initialize: end")
 
 	shimParams, err := parseCLIParams(context)
 	if err != nil {
@@ -258,6 +312,9 @@ func initialize(context *cli.Context) (*shim, error) {
 }
 
 func (s *shim) setup() error {
+	logInfo("Shim setup: start")
+	defer logInfo("Shim setup: end")
+
 	// Connect URI
 	if err := s.connectURI(); err != nil {
 		return err
@@ -270,6 +327,13 @@ func (s *shim) setup() error {
 
 	// Setup terminal
 	if err := s.setupTerminal(); err != nil {
+		return err
+	}
+
+	// Spawn child process to watchdog the parent. This is needed for the
+	// specific case of SIGKILL and SIGSTOP since those signals cannot be
+	// caught by the current process.
+	if err := s.spawnChildWatchdog(); err != nil {
 		return err
 	}
 
@@ -288,6 +352,8 @@ func (s *shim) setup() error {
 }
 
 func (s *shim) mainLoop() error {
+	logInfo("Shim mainLoop: start")
+	defer logInfo("Shim mainLoop: end")
 	for {
 		select {
 		case frame := <-s.frameCh:
@@ -314,23 +380,57 @@ func (s *shim) mainLoop() error {
 	return nil
 }
 
-func (s *shim) cleanup() error {
-	// Un-assign all signals. They are no longer routed to
-	// shim.signalCh channel
-	signal.Reset()
+func (s *shim) teardown() error {
+	logInfo("Shim teardown: start")
+	defer logInfo("Shim teardown: end")
 
 	if err := s.disconnectProxy(); err != nil {
 		return err
 	}
 
-	if err := s.disconnectURI(); err != nil {
-		return err
+	return s.disconnectURI()
+}
+
+func (s *shim) exit() {
+	logInfo("Shim parent exits")
+
+	// Un-assign all signals. They are no longer routed to
+	// shim.signalCh channel
+	signal.Reset()
+
+	if s.pipeChild != nil {
+		s.pipeChild.Write([]byte{endByte})
 	}
 
-	return s.restoreTerminal()
+	if s.savedTermios {
+		s.restoreTerminal()
+	}
+
+	os.Exit(s.exitCode)
+}
+
+func isRunningChild() bool {
+	if os.Args[0] == childProcessName {
+		return true
+	}
+
+	return false
 }
 
 func main() {
+	if err := initSyslog(); err != nil {
+		os.Exit(1)
+	}
+
+	if isRunningChild() {
+		if err := mainChild(); err != nil {
+			logError(err)
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	// Read flags from CLI
 	cli.VersionFlag = cli.BoolFlag{
 		Name:  "version, v",
@@ -364,26 +464,27 @@ func main() {
 	}
 
 	shimCLI.Action = func(context *cli.Context) (err error) {
-		defer logError(err)
-
-		shim, err := initialize(context)
+		s, err := initialize(context)
 		if err != nil {
+			logError(err)
+			return
+		}
+		defer s.exit()
+
+		if err = s.setup(); err != nil {
+			logError(err)
 			return
 		}
 
-		if err = shim.setup(); err != nil {
+		if err = s.mainLoop(); err != nil {
+			logError(err)
 			return
 		}
 
-		if err = shim.mainLoop(); err != nil {
+		if err = s.teardown(); err != nil {
+			logError(err)
 			return
 		}
-
-		if err = shim.cleanup(); err != nil {
-			return
-		}
-
-		os.Exit(shim.exitCode)
 
 		return nil
 	}
