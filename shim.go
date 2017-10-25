@@ -130,6 +130,18 @@ func (s *shim) connectURI() error {
 	return nil
 }
 
+func (s *shim) disconnectURI() error {
+	defer func() {
+		s.conn = nil
+	}()
+
+	if s.conn == nil {
+		return nil
+	}
+
+	return s.conn.Close()
+}
+
 func saneTerminal(terminal *os.File) error {
 	// Go doesn't have a wrapper for any of the termios ioctls.
 	var termios unix.Termios
@@ -206,6 +218,10 @@ func (s *shim) setupProxyMessages() error {
 		for {
 			frame, err := api.ReadFrame(s.conn)
 			if err != nil {
+				if err == io.EOF {
+					break
+				}
+
 				s.errCh <- err
 			}
 
@@ -295,11 +311,7 @@ func (s *shim) setup() error {
 	}
 
 	// Setup STDIN read loop
-	if err := s.setupStdin(); err != nil {
-		return err
-	}
-
-	return nil
+	return s.setupStdin()
 }
 
 func (s *shim) mainLoop() error {
@@ -327,6 +339,22 @@ func (s *shim) mainLoop() error {
 	}
 
 	return nil
+}
+
+func (s *shim) cleanup() error {
+	// Un-assign all signals. They are no longer routed to
+	// shim.signalCh channel
+	signal.Reset()
+
+	if err := s.disconnectProxy(); err != nil {
+		return err
+	}
+
+	if err := s.disconnectURI(); err != nil {
+		return err
+	}
+
+	return s.restoreTerminal()
 }
 
 func main() {
@@ -362,24 +390,25 @@ func main() {
 		},
 	}
 
-	shimCLI.Action = func(context *cli.Context) error {
+	shimCLI.Action = func(context *cli.Context) (err error) {
+		defer logError(err)
+
 		shim, err := initialize(context)
 		if err != nil {
-			logError(err)
-			return err
+			return
 		}
 
-		if err := shim.setup(); err != nil {
-			logError(err)
-			return err
+		if err = shim.setup(); err != nil {
+			return
 		}
 
-		if err := shim.mainLoop(); err != nil {
-			logError(err)
-			return err
+		if err = shim.mainLoop(); err != nil {
+			return
 		}
 
-		shim.restoreTerminal()
+		if err = shim.cleanup(); err != nil {
+			return
+		}
 
 		os.Exit(shim.exitCode)
 

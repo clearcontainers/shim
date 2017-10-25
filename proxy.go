@@ -63,6 +63,20 @@ func (s *shim) connectProxy() error {
 	return api.WriteCommand(s.conn, api.CmdConnectShim, payloadBuf)
 }
 
+func (s *shim) disconnectProxy() error {
+	payload := api.DisconnectShim{}
+
+	payloadBuf, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	return api.WriteCommand(s.conn, api.CmdDisconnectShim, payloadBuf)
+}
+
 func (s *shim) handleSignal(signal os.Signal) error {
 	sig, ok := signal.(syscall.Signal)
 	if !ok {
