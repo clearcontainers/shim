@@ -42,7 +42,7 @@ AM_CFLAGS = -std=gnu99 -fstack-protector -Wall -pedantic \
 	-Werror-implicit-function-declaration \
 	-Wformat -Wformat-security -Werror=format-security \
 	-Wconversion -Wunreachable-code \
-	-fPIE
+	-fPIE -O2
 
 AM_LDFLAGS = -pie -z noexecstack -z relro -z now
 
