@@ -37,6 +37,7 @@ then
         --need-sign-offs \
         --body-length 72 \
         --subject-length 75 \
+	--ignore-fixes-for-subsystem "release" \
         --verbose
 
     # Travis doesn't provide a VT-x environment, so nothing more to do
