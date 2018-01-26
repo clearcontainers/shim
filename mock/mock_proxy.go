@@ -16,6 +16,7 @@ package mock
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -153,6 +154,72 @@ func stdinShimHandler(data []byte, userData interface{}, response *handlerRespon
 	proxy.StdinReceived <- true
 }
 
+func registerVMHandler(data []byte, userData interface{}, response *handlerResponse) {
+	client := userData.(*client)
+	proxy := client.proxy
+
+	proxy.log("Register VM")
+
+	payload := api.RegisterVM{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		response.SetError(err)
+		return
+	}
+
+	// Generate fake tokens
+	var tokens []string
+	for i := 0; i < payload.NumIOStreams; i++ {
+		tokens = append(tokens, fmt.Sprintf("%d", i))
+	}
+
+	io := &api.IOResponse{
+		Tokens: tokens,
+	}
+
+	response.AddResult("io", io)
+}
+
+func unregisterVMHandler(data []byte, userData interface{}, response *handlerResponse) {
+	client := userData.(*client)
+	proxy := client.proxy
+
+	proxy.log("Unregister VM")
+}
+
+func attachVMHandler(data []byte, userData interface{}, response *handlerResponse) {
+	client := userData.(*client)
+	proxy := client.proxy
+
+	proxy.log("Attach VM")
+
+	payload := api.AttachVM{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		response.SetError(err)
+		return
+	}
+
+	// Generate fake tokens
+	var tokens []string
+	for i := 0; i < payload.NumIOStreams; i++ {
+		tokens = append(tokens, fmt.Sprintf("%d", i))
+	}
+
+	io := &api.IOResponse{
+		Tokens: tokens,
+	}
+
+	response.AddResult("io", io)
+}
+
+func hyperCmdHandler(data []byte, userData interface{}, response *handlerResponse) {
+	client := userData.(*client)
+	proxy := client.proxy
+
+	proxy.log("Hyper command")
+
+	response.SetData([]byte{})
+}
+
 // SendStdoutStream sends a Stdout Stream Frame to connected client
 func (proxy *Proxy) SendStdoutStream(payload []byte) {
 	err := api.WriteStream(proxy.cl, api.StreamStdout, payload)
@@ -198,18 +265,33 @@ func (proxy *Proxy) serveClient(proto *protocol, newConn net.Conn) {
 func (proxy *Proxy) serve() {
 	proto := newProtocol()
 
+	// shim handlers
 	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdConnectShim)}, connectShimHandler)
 	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdDisconnectShim)}, disconnectShimHandler)
-	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdSignal)}, signalShimHandler)
-	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdConnectShim)}, connectShimHandler)
-
 	proto.Handle(FrameKey{api.TypeStream, int(api.StreamStdin)}, stdinShimHandler)
+
+	// runtime handlers
+	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdRegisterVM)}, registerVMHandler)
+	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdUnregisterVM)}, unregisterVMHandler)
+	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdAttachVM)}, attachVMHandler)
+	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdHyper)}, hyperCmdHandler)
+
+	// Shared handler between shim and runtime
+	proto.Handle(FrameKey{api.TypeCommand, int(api.CmdSignal)}, signalShimHandler)
 
 	//Wait for a single client connection
 	conn, err := proxy.listener.Accept()
-	assert.Nil(proxy.t, err)
+	if err != nil {
+		// Ending up into this case when the listener is closed, which
+		// is still a valid case. We don't want to throw an error in
+		// this case.
+		return
+	}
+
 	assert.NotNil(proxy.t, conn)
 	proxy.log("Client connected")
+
+	proxy.wg.Add(1)
 
 	proxy.cl = conn
 
@@ -219,8 +301,11 @@ func (proxy *Proxy) serve() {
 // Start invokes mock proxy instance to start listening.
 func (proxy *Proxy) Start() {
 	proxy.startListening()
-	proxy.wg.Add(1)
-	go proxy.serve()
+	go func() {
+		for {
+			proxy.serve()
+		}
+	}()
 }
 
 // Stop causes  mock proxy instance to stop listening,

@@ -29,6 +29,7 @@ type protocolHandler func([]byte, interface{}, *handlerResponse)
 type handlerResponse struct {
 	err     error
 	results map[string]interface{}
+	data    []byte
 }
 
 // SetError indicates sets error for the response.
@@ -52,6 +53,10 @@ func (r *handlerResponse) AddResult(key string, value interface{}) {
 		r.results = make(map[string]interface{})
 	}
 	r.results[key] = value
+}
+
+func (r *handlerResponse) SetData(data []byte) {
+	r.data = data
 }
 
 // FrameKey is a struct composed of the the frame type and opcode,
